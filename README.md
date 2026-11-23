@@ -40,6 +40,8 @@ Footage it expects:
 
 ## Use
 
+Open the panel from Premiere's **top menu bar: Window → Extensions → FPV Sync**. It has three buttons:
+
 **Match & sync selected**
 1. Put your HD clips and DVR clips in a sequence. Their order and placement don't matter.
 2. Select them (Ctrl+A for everything) and click the button.
