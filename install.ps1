@@ -3,7 +3,8 @@
 [CmdletBinding()]
 param(
     [string]$Destination = (Join-Path $env:APPDATA 'Adobe\CEP\extensions\fpvsync'),
-    [switch]$NoRegistry          # testing only: leave the Premiere setting alone
+    [switch]$NoRegistry,         # testing only: leave the Premiere setting alone
+    [string]$Python = ''         # testing only: use this python.exe instead of looking for one
 )
 $ErrorActionPreference = 'Stop'
 $src = Join-Path $PSScriptRoot 'fpvsync'
@@ -36,6 +37,21 @@ if (-not $NoRegistry) { foreach ($v in 9..12) {
 }
 
 # 3. Python 3 with numpy
+# Programs like python and pip print warnings and errors as normal output; Windows PowerShell would
+# treat those as script errors and stop. So run them here, keep their output, and judge by exit code.
+function Invoke-Program([string]$exe, [string[]]$argv) {
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = & $exe @argv 2>&1 | ForEach-Object { "$_" }
+        $code = $LASTEXITCODE
+    } catch {
+        $out = @("$_"); $code = 9009                  # program not found
+    } finally {
+        $ErrorActionPreference = $old
+    }
+    return @{ code = $code; out = @($out) }
+}
 function Find-Python {
     $tries = @(
         @{ exe = 'py'; pre = @('-3') },
@@ -43,29 +59,27 @@ function Find-Python {
         @{ exe = 'python3'; pre = @() }
     )
     foreach ($t in $tries) {
-        try {
-            $exe = & $t.exe @($t.pre) -c "import sys; print(sys.executable)" 2>$null
-            if ($LASTEXITCODE -eq 0 -and $exe) {
-                $exe = "$exe".Trim()
-                # skip the Microsoft Store placeholder that only opens the Store
-                if ((Test-Path $exe) -and ($exe -notmatch 'WindowsApps')) { return $exe }
-            }
-        } catch {}
+        $r = Invoke-Program $t.exe (@($t.pre) + @('-c', 'import sys; print(sys.executable)'))
+        if ($r.code -eq 0 -and $r.out.Count) {
+            $exe = "$($r.out[-1])".Trim()
+            # skip the Microsoft Store placeholder that only opens the Store
+            if ((Test-Path $exe) -and ($exe -notmatch 'WindowsApps')) { return $exe }
+        }
     }
     return $null
 }
-$py = Find-Python
+$py = if ($Python) { $Python } else { Find-Python }
 if (-not $py) {
     Say "[!!] Python 3 not found. Install it from https://www.python.org/downloads/ (tick 'Add python.exe to PATH'), then run install.bat again." Yellow
 } else {
-    & $py -c "import numpy" 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Say "     Installing numpy for $py ..."
-        & $py -m pip install --user numpy
+    if ((Invoke-Program $py @('-c', 'import numpy')).code -ne 0) {
+        Say "     Installing numpy for $py (this can take a minute) ..."
+        $r = Invoke-Program $py @('-m', 'pip', 'install', '--user', 'numpy')
+        if ($r.code -ne 0) { $r = Invoke-Program $py @('-m', 'pip', 'install', 'numpy') }
+        if ($r.code -ne 0) { $r.out | Select-Object -Last 4 | ForEach-Object { Say "     $_" } }
     }
-    & $py -c "import numpy" 2>$null
-    if ($LASTEXITCODE -eq 0) { Say "[ok] Python with numpy: $py" Green }
-    else { Say "[!!] numpy didn't install. Try:  `"$py`" -m pip install numpy" Yellow }
+    if ((Invoke-Program $py @('-c', 'import numpy')).code -eq 0) { Say "[ok] Python with numpy: $py" Green }
+    else { Say "[!!] numpy didn't install. Open a terminal and run:  `"$py`" -m pip install numpy" Yellow }
     $cfgPath = Join-Path $Destination 'config.json'
     $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
     $cfg.python = $py
