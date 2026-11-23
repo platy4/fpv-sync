@@ -24,7 +24,7 @@ Footage it expects:
 
 ## Install
 
-1. On this page, click **Code → Download ZIP** and unzip it anywhere.
+1. **[Download the latest release](https://github.com/platy4/fpv-sync/releases/latest)**: under *Assets*, click **FPV-Sync-v….zip**. Unzip it anywhere.
 2. Install Python and ffmpeg if you don't have them (see above).
 3. Double-click **`install.bat`**. It:
    - copies the panel into Premiere's extensions folder;
@@ -35,7 +35,7 @@ Footage it expects:
    Read what it prints: anything marked **[!!]** tells you what's missing.
 4. Restart Premiere Pro, then open **Window → Extensions → FPV Sync**.
 
-**Updating:** download the new ZIP and run `install.bat` again. Your settings and the analysis cache are kept.
+**Updating:** download the newest release ZIP and run `install.bat` again. Your settings and the analysis cache are kept.
 **Removing:** run `uninstall.bat`.
 
 ## Use
