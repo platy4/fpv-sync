@@ -1,0 +1,16 @@
+{
+  "python": "python",
+  "dvr": "^ORQA",
+  "action": "",
+  "lead": 1,
+  "prior_window": 30,
+  "pip": {
+    "scale": 76,
+    "crop_top": 0.6,
+    "crop_right": 0,
+    "dvr_size_fallback": [
+      1280,
+      960
+    ]
+  }
+}
