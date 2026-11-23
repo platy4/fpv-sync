@@ -2,7 +2,7 @@
 
 A Premiere Pro panel that lines up your **analog FPV DVR** recordings with your **HD camera** footage (GoPro, DJI Action, or any camera that records sound) and puts the DVR in the corner of the frame.
 
-> **Analog DVR only.** It reads the Betaflight OSD burned into analog goggle recordings (made with Orqa goggles, NTSC and PAL). Digital systems' recordings (DJI, Walksnail, HDZero) aren't supported.
+> **For now: Orqa analog DVR only.** It reads the Betaflight OSD burned into the DVR recordings of Orqa goggles (NTSC and PAL). Other goggles and digital systems (DJI, Walksnail, HDZero) aren't supported yet.
 
 It finds:
 - **on the DVR:** the frame where Betaflight's OSD shows **ARMED**;
@@ -18,7 +18,7 @@ It lines those two up to within a frame or two. It works out which DVR recording
 - Optional: an NVIDIA graphics card makes reading 4K footage faster. Without one it still works.
 
 Footage it expects:
-- **Analog** DVR recordings with the OSD burned in, named like `ORQA0123.MP4` (Orqa goggles). For other analog goggles, see [Settings](#settings).
+- **Orqa goggles' analog DVR recordings** (`ORQA0123.MP4` …), with the OSD burned in.
 - The Betaflight **ARMED** message visible on the DVR when you arm.
 - An HD camera that records sound, so the props can be heard.
 
@@ -35,7 +35,7 @@ Footage it expects:
    Read what it prints: anything marked **[!!]** tells you what's missing.
 4. Restart Premiere Pro, then open **Window → Extensions → FPV Sync**.
 
-**Updating:** download the newest release ZIP and run `install.bat` again. Your settings and the analysis cache are kept.
+**Updating:** download the newest release ZIP and run `install.bat` again. The analysis cache is kept, so footage it has already read stays fast.
 **Removing:** run `uninstall.bat`.
 
 ## Use
@@ -59,19 +59,6 @@ Scales the DVR, puts it bottom-right and crops the top. It works on the selected
 The **results table** lists every flight. Rows marked **check** were matched in an unusual way (no ARMED, no prop sound, file order only), so it's worth a quick look.
 
 The **first run on a trip** has to read the footage. Expect a few minutes for a day of flying on a hard drive. After that the analysis is cached and re-runs take seconds. Time estimates appear on the buttons once the panel has done one run on your PC.
-
-## Settings
-
-`config.json` in `%APPDATA%\Adobe\CEP\extensions\fpvsync`. It's re-read on every click, so no restart is needed.
-
-| Setting | What it does | Default |
-|---|---|---|
-| `dvr` | file-name pattern of DVR recordings (regular expression) | `^ORQA` |
-| `action` | file-name pattern of HD clips; empty = every non-DVR video | `""` |
-| `pip.scale` | DVR size in the corner, % | `76` |
-| `pip.crop_top` | crop at the top of the DVR, % | `0.6` |
-| `prior_window` | Sync selected: how far off (s) the rough placement may be | `30` |
-| `python` | path to python.exe (the installer fills this in) | |
 
 ## Troubleshooting
 
