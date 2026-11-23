@@ -33,7 +33,7 @@ Footage it expects:
    - checks for ffmpeg.
 
    Read what it prints: anything marked **[!!]** tells you what's missing.
-4. Restart Premiere Pro, then open **Window → Extensions → FPV Sync**.
+4. Restart Premiere Pro. In the **menu bar at the top of Premiere**, open **Window → Extensions → FPV Sync**. The panel opens as a small window; you can dock it next to your other panels like any Premiere panel.
 
 **Updating:** download the newest release ZIP and run `install.bat` again. The analysis cache is kept, so footage it has already read stays fast.
 **Removing:** run `uninstall.bat`.
@@ -62,7 +62,7 @@ The **first run on a trip** has to read the footage. Expect a few minutes for a 
 
 ## Troubleshooting
 
-- **FPV Sync isn't in Window → Extensions:** run `install.bat` again and restart Premiere.
+- **FPV Sync isn't under Window → Extensions** (Premiere's top menu bar): run `install.bat` again and restart Premiere.
 - **"python" or "ffmpeg" errors:** install them (see [What you need](#what-you-need)), run `install.bat` again, and restart the PC so the new PATH is picked up.
 - **A flight is off or unmatched:** very loud places (race events, wind) can hide the prop sound. Those flights stay unmatched or get a **check** mark; sync them by hand or with **Sync selected**.
 - **Something else:** `%APPDATA%\Adobe\CEP\extensions\fpvsync\panel_log.txt` shows what the panel asked Premiere to do, and `timing_log.jsonl` next to it shows what each run did.

@@ -82,4 +82,4 @@ else {
     Say "     then restart the PC (or at least Premiere) so it's found." Yellow
 }
 
-Say "`nDone. Restart Premiere Pro, then open Window > Extensions > FPV Sync.`n" Cyan
+Say "`nDone. Restart Premiere Pro, then in its top menu bar open:  Window > Extensions > FPV Sync`n" Cyan
