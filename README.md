@@ -10,6 +10,8 @@ It finds:
 
 It lines those two up to within a frame or two. It works out which DVR recording goes with which HD clip from the cameras' clocks, the file numbers, and the motion in both videos, so you can drop a whole trip in at once.
 
+<p align="center"><img src="panel.png" width="380" alt="The FPV Sync panel after matching a day of flying: 23 flights matched and synced"></p>
+
 ## What you need
 
 - **Windows 10 or 11** with **Premiere Pro 2022 or newer**
