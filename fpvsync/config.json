@@ -1,6 +1,6 @@
 {
   "python": "python",
-  "dvr": "^ORQA",
+  "dvr": "orqa",
   "action": "",
   "lead": 1,
   "prior_window": 30,

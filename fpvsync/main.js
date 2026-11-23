@@ -12,7 +12,7 @@ const SCRIPT = path.join(APP_DIR, 'fpvsync.py');
 const LOG = path.join(APP_DIR, 'panel_log.txt');
 let cfg;
 function loadConfig() {          // re-read on every click, so config edits apply without reopening
-  cfg = { python: 'python', dvr: '^ORQA', action: '', lead: 1, prior_window: 30 };
+  cfg = { python: 'python', dvr: 'orqa', action: '', lead: 1, prior_window: 30 };
   try { Object.assign(cfg, JSON.parse(fs.readFileSync(path.join(panelDir, 'config.json'), 'utf8'))); } catch (e) {}
   if (cfg.python !== 'python' && !fs.existsSync(cfg.python)) cfg.python = 'python';
 }

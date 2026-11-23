@@ -41,6 +41,7 @@ def set_osd_search(mode):
     SX, SY, SW, SH = OSD_BOXES[OSD_MODE]
 ARM_THRESHOLD = 0.55            # NCC score that counts as "ARMED visible"
 ARM_MIN_RUN = 8                 # consecutive frames needed (ARMED shows ~35)
+DVR_NAME = "orqa"               # DVR recordings: file names with "orqa" anywhere (ORQA0123.MP4, day1_orqa_12.46.mp4)
 ARMED_STEP = 6                  # coarse scan: every 6th frame; a real ARMED can be as short as 7 frames
 
 
@@ -1551,7 +1552,7 @@ def predict_costs(dvr_paths, act_paths, disk=None):
 
 def estimate_actions(job):
     """Seconds each panel button would take on the current selection (no footage is read)."""
-    dvr_re, act_re = job.get("dvr", r"^ORQA"), job.get("action", "")
+    dvr_re, act_re = job.get("dvr", DVR_NAME), job.get("action", "")
     clips = [c for c in job.get("clips", []) if c.get("kind") == "video" and c.get("path")]
     is_dvr = lambda c: re.search(dvr_re, os.path.basename(c["path"]), re.I)
     is_act = lambda c: is_hd(c["path"], dvr_re, act_re)
@@ -2403,7 +2404,7 @@ def process_job(job_path, out_path):
                                                      flush=True)
         if job.get("mode") == "build":
             log = lambda m: (lines.append(m), print(m, flush=True))
-            dvr_re, act_re = job.get("dvr", r"^ORQA"), job.get("action", "")
+            dvr_re, act_re = job.get("dvr", DVR_NAME), job.get("action", "")
             paths = list(dict.fromkeys(job["paths"]))
             dv = [p for p in paths if re.search(dvr_re, os.path.basename(p), re.I)]
             ac = [p for p in paths if is_hd(p, dvr_re, act_re)]
@@ -2412,7 +2413,7 @@ def process_job(job_path, out_path):
                                              job.get("lead", 1), log)
             res = {"placements": placements, "report": report, "log": lines}
         else:
-            rows = sync_clips(job["fps"], job["clips"], job.get("dvr", r"^ORQA"),
+            rows = sync_clips(job["fps"], job["clips"], job.get("dvr", DVR_NAME),
                               job.get("action", ""), job.get("lead", 1),
                               job.get("prior_window", 30.0), job.get("only_selected", True),
                               log=lines.append)
@@ -2435,7 +2436,7 @@ def process_job(job_path, out_path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("xml", nargs="?", help="Final Cut Pro XML exported from Premiere")
-    ap.add_argument("--dvr", default=r"^ORQA", help="regex for DVR file names (default ^ORQA)")
+    ap.add_argument("--dvr", default=DVR_NAME, help="regex for DVR file names (default: 'orqa' anywhere in the name)")
     ap.add_argument("--action", default="", help="regex for HD file names (default: every non-DVR video)")
     ap.add_argument("--lead", type=int, default=1, help="frames ARMED leads the prop sound (default 1)")
     ap.add_argument("--prior-window", type=float, default=30.0,
