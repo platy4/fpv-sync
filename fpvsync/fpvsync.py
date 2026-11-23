@@ -49,6 +49,42 @@ def run(cmd):
     return subprocess.run(cmd, capture_output=True, check=True).stdout
 
 
+def ensure_ffmpeg():
+    """Make sure ffmpeg and ffprobe can be started. Premiere hands its panels the PATH it had when it
+    started, so an ffmpeg installed since then isn't on it: look in the PATH Windows has now and in the
+    usual install folders, and add the folder found. Raises a plain-language error if there's none."""
+    import shutil, glob
+    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+        return
+    dirs = []
+    if os.name == "nt":
+        try:
+            import winreg
+            for root, sub in ((winreg.HKEY_CURRENT_USER, r"Environment"),
+                              (winreg.HKEY_LOCAL_MACHINE,
+                               r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
+                try:
+                    with winreg.OpenKey(root, sub) as k:
+                        dirs += os.path.expandvars(winreg.QueryValueEx(k, "Path")[0]).split(";")
+                except OSError:
+                    pass
+        except ImportError:
+            pass
+        la, up = os.environ.get("LOCALAPPDATA", ""), os.environ.get("USERPROFILE", "")
+        dirs.append(os.path.join(la, r"Microsoft\WinGet\Links"))                       # winget
+        dirs += glob.glob(os.path.join(la, r"Microsoft\WinGet\Packages\*FFmpeg*\*\bin"))
+        dirs += [r"C:\ffmpeg\bin", r"C:\ProgramData\chocolatey\bin", os.path.join(up, r"scoop\shims")]
+        dirs += glob.glob(r"C:\Program Files*\ffmpeg*\bin")
+    for d in dirs:
+        d = d.strip().strip('"')
+        exe = ".exe" if os.name == "nt" else ""
+        if d and os.path.isfile(os.path.join(d, "ffprobe" + exe)) and os.path.isfile(os.path.join(d, "ffmpeg" + exe)):
+            os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+            return
+    raise RuntimeError("ffmpeg isn't installed, or Windows can't find it. Open a terminal (cmd), run "
+                       "'winget install Gyan.FFmpeg', then restart the PC and try again.")
+
+
 def probe_fps(path):
     out = run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                "stream=r_frame_rate,avg_frame_rate", "-of", "json", path])
@@ -2335,6 +2371,11 @@ TIMED_STEPS = ["detect_armed_runs", "detect_prop_onsets", "motion_signal", "refi
 def process_job(job_path, out_path):
     global TIMING
     job = json.load(open(job_path, encoding="utf-8"))
+    try:
+        ensure_ffmpeg()
+    except RuntimeError as e:                          # the panel shows this message as it is
+        json.dump({"error": str(e)}, open(out_path, "w", encoding="utf-8"))
+        return
     if job.get("mode") == "estimate":
         try:
             res = estimate_actions(job)
@@ -2408,7 +2449,12 @@ def main():
     a = ap.parse_args()
     if a.job:
         process_job(*a.job)
-    elif a.make_template:
+        return
+    try:
+        ensure_ffmpeg()
+    except RuntimeError as e:
+        sys.exit(str(e))
+    if a.make_template:
         make_template(a.make_template[0], int(a.make_template[1]))
     elif a.armed:
         print(detect_armed(a.armed, a.verbose))
