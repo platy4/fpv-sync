@@ -20,7 +20,7 @@ It lines those two up to within a frame or two. It works out which DVR recording
 - Optional: an NVIDIA graphics card makes reading 4K footage faster. Without one it still works.
 
 Footage it expects:
-- **Orqa goggles' analog DVR recordings** (`ORQA0123.MP4` …), with the OSD burned in.
+- **Orqa goggles' analog DVR recordings**, with the OSD burned in. Renaming them is fine as long as **"orqa"** stays somewhere in the file name (`ORQA0123.MP4`, `day1_orqa_12.46.mp4`). Every other video counts as HD footage.
 - The Betaflight **ARMED** message visible on the DVR when you arm.
 - An HD camera that records sound, so the props can be heard.
 

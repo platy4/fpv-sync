@@ -26,6 +26,13 @@ $keepConfig = Test-Path (Join-Path $Destination 'config.json')
 Get-ChildItem $src | Where-Object { -not ($keepConfig -and $_.Name -eq 'config.json') } |
     Copy-Item -Destination $Destination -Recurse -Force
 Say "[ok] Panel copied to $Destination" Green
+# an update keeps the old settings: move them to the current defaults where those changed
+$cfgPath = Join-Path $Destination 'config.json'
+$cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
+if ($cfg.dvr -eq '^ORQA') {                    # DVR names: "orqa" anywhere, so renamed files work too
+    $cfg.dvr = 'orqa'
+    [IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json -Depth 5))
+}
 
 # 2. Let Premiere load a panel that isn't signed by Adobe (per-user setting, every CEP version)
 if (-not $NoRegistry) { foreach ($v in 9..12) {
