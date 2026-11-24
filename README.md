@@ -46,6 +46,7 @@ Open the panel from Premiere's **top menu bar: Window → Extensions → FPV Syn
 1. **Pick an action** at the top: **Match & Sync**, **Sync** or **PiP Layout**. The picked one turns blue, and its instructions show underneath.
 2. **Select the clips** in the timeline (Ctrl+A for everything).
 3. **Say what each camera is.** The panel lists the cameras in your selection, read from the files themselves (for example *Orqa DVR*, *DJI Action 2*, *GoPro HERO5 Session*), and you set each one to **DVR**, **HD**, **Stickcam** or **None**. It remembers your choice for that camera, so next time it's already filled in. The list follows your selection as you change it.
+   DVR cameras also get an **Audio kept / Audio removed** button. Keep it if your goggles record sound through a mic: that sound then also helps match the flights. Set it to removed if your goggles record silence: the DVR sound is taken out of the timeline and never listened to.
 4. Click **Start**.
 
 <p align="center"><img src="panel-cameras.png" width="480" alt="The cameras in the selection with their roles, and the PiP Layout settings with a box being dragged to a new spot"></p>
@@ -71,6 +72,12 @@ Match & Sync and Sync have a **PiP Layout** tickbox that does the same right aft
 ### While it runs
 
 The progress bar shows the percentage and the time so far. Below it, every file is listed in its column (DVR, HD, stickcam) with each step as it happens: **ARMED** found, **props** heard, matched by **clock** or **motion**, lined up by **sound**, and so on. Green means it worked, red means that step didn't. The counters on top show how many were matched and synced, and how many have no match.
+
+**Click a file** to jump the playhead to it in the timeline. The other way round works too: select one clip in the timeline and its file is highlighted in the list.
+
+**Skip** a file that's wasting time (the ⏭ button on its row), at any point while the analysis runs: whatever it was doing on that file stops, and the file is left in recording order. Changed your mind? Click undo and it's processed again.
+
+Your selection is locked in when you press Start, so you can click around the timeline while it runs.
 
 **Stop** on the progress line: the first click stops reading new footage and lines up what's already analysed. A second click cancels everything, and nothing in the sequence changes.
 
