@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="9.0" ExtensionBundleId="com.fpvsync.panel" ExtensionBundleVersion="1.0.0"
+<ExtensionManifest Version="9.0" ExtensionBundleId="com.fpvsync.panel" ExtensionBundleVersion="0.2.0"
                    ExtensionBundleName="FPV Sync" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <ExtensionList>
-    <Extension Id="com.fpvsync.panel.main" Version="1.0.0"/>
+    <Extension Id="com.fpvsync.panel.main" Version="0.2.0"/>
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>
@@ -33,7 +33,7 @@
           <Type>Panel</Type>
           <Menu>FPV Sync</Menu>
           <Geometry>
-            <Size><Height>420</Height><Width>320</Width></Size>
+            <Size><Height>820</Height><Width>760</Width></Size>
             <MinSize><Height>200</Height><Width>220</Width></MinSize>
           </Geometry>
         </UI>
