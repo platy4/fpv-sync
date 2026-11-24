@@ -1,16 +1,15 @@
 # FPV Sync for Premiere Pro
 
-A Premiere Pro panel that lines up your **analog FPV DVR** recordings with your **HD camera** footage (GoPro, DJI Action, or any camera that records sound) and puts the DVR in the corner of the frame.
+A Premiere Pro panel that lines up your **analog FPV DVR** recordings with your **HD camera** footage (GoPro, DJI Action, or any camera that records sound), and your **stickcam** (a camera filming your hands on the radio) too. It then lays out the picture-in-picture for you.
 
 > **For now: Orqa analog DVR only.** It reads the Betaflight OSD burned into the DVR recordings of Orqa goggles (NTSC and PAL). Other goggles and digital systems (DJI, Walksnail, HDZero) aren't supported yet.
 
-It finds:
-- **on the DVR:** the frame where Betaflight's OSD shows **ARMED**;
-- **on the HD camera:** the moment the props spin up in the audio.
+How it lines things up:
+- **DVR to HD:** the frame where Betaflight's OSD shows **ARMED** on the DVR, and the moment the props spin up in the HD camera's sound. That's within a frame or two.
+- **Stickcam to HD:** by sound. Both cameras hear you talk, clap or snap your fingers before takeoff, so the panel slides one soundtrack over the other until they match.
+- **Which DVR goes with which HD clip:** from the cameras' clocks, the file numbers and the motion in both videos, so you can drop a whole trip in at once.
 
-It lines those two up to within a frame or two. It works out which DVR recording goes with which HD clip from the cameras' clocks, the file numbers, and the motion in both videos, so you can drop a whole trip in at once.
-
-<p align="center"><img src="panel.png" width="380" alt="The FPV Sync panel after matching a day of flying: 23 flights matched and synced"></p>
+<p align="center"><img src="panel.png" width="480" alt="The FPV Sync panel after matching a trip: DVR, HD and stickcam footage side by side, each file with the steps that matched it"></p>
 
 ## What you need
 
@@ -20,9 +19,9 @@ It lines those two up to within a frame or two. It works out which DVR recording
 - Optional: an NVIDIA graphics card makes reading 4K footage faster. Without one it still works.
 
 Footage it expects:
-- **Orqa goggles' analog DVR recordings**, with the OSD burned in. Renaming them is fine as long as **"orqa"** stays somewhere in the file name (`ORQA0123.MP4`, `day1_orqa_12.46.mp4`). Every other video counts as HD footage.
-- The Betaflight **ARMED** message visible on the DVR when you arm.
-- An HD camera that records sound, so the props can be heard.
+- **Orqa goggles' analog DVR recordings**, with the OSD burned in, and the Betaflight **ARMED** message visible when you arm.
+- An **HD camera that records sound**, so the props can be heard.
+- Optional: a **stickcam** that records sound.
 
 ## Install
 
@@ -35,40 +34,61 @@ Footage it expects:
    - checks for ffmpeg.
 
    Read what it prints: anything marked **[!!]** tells you what's missing.
-4. Restart Premiere Pro. In the **menu bar at the top of Premiere**, open **Window → Extensions → FPV Sync**. The panel opens as a small window; you can dock it next to your other panels like any Premiere panel.
+4. Restart Premiere Pro. In the **menu bar at the top of Premiere**, open **Window → Extensions → FPV Sync**. You can dock the panel next to your other panels like any Premiere panel.
 
-**Updating:** download the newest release ZIP and run `install.bat` again. The analysis cache is kept, so footage it has already read stays fast.
+**Updating:** download the newest release ZIP and run `install.bat` again. The analysis cache and your settings are kept, so footage it has already read stays fast.
 **Removing:** run `uninstall.bat`.
 
 ## Use
 
-Open the panel from Premiere's **top menu bar: Window → Extensions → FPV Sync**. It has three buttons:
+Open the panel from Premiere's **top menu bar: Window → Extensions → FPV Sync**.
 
-**Match & sync selected**
-1. Put your HD clips and DVR clips in a sequence. Their order and placement don't matter.
-2. Select them (Ctrl+A for everything) and click the button.
+1. **Pick an action** at the top: **Match & Sync**, **Sync** or **PiP Layout**. The picked one turns blue, and its instructions show underneath.
+2. **Select the clips** in the timeline (Ctrl+A for everything).
+3. **Say what each camera is.** The panel lists the cameras in your selection, read from the files themselves (for example *Orqa DVR*, *DJI Action 2*, *GoPro HERO5 Session*), and you set each one to **DVR**, **HD**, **Stickcam** or **None**. It remembers your choice for that camera, so next time it's already filled in. The list follows your selection as you change it.
+4. Click **Start**.
 
-Each DVR is matched to its flight, synced, and put in the bottom-right corner, right where your selection was. Everything is laid out in recording order, 30 s apart. Footage without a match stays in its place in time, so DVR-only or HD-only clips are easy to find.
+<p align="center"><img src="panel-cameras.png" width="480" alt="The cameras in the selection with their roles, and the PiP Layout settings with a box being dragged to a new spot"></p>
+
+### Match & Sync
+
+Put your HD, DVR and stickcam clips in a sequence (their order and placement don't matter), select them and Start. Each DVR is matched to its flight and synced, each stickcam clip is lined up with its HD clip by sound, and everything is laid out in recording order, 30 s apart, right where your selection was. Footage without a match stays in its place in time, so DVR-only or HD-only clips are easy to find.
 
 Clips you didn't select (other cameras, B-roll) are never changed. If the synced flights need more room, the clips after them are pushed later.
 
-**Sync selected**
-For flights you've already paired by hand:
-1. Drop each DVR roughly over its HD clip (within about 30 s).
-2. Select them and click the button. Only those are synced.
+### Sync
 
-**DVR in the Corner**
-Scales the DVR, puts it bottom-right and crops the top. It works on the selected DVR clips, or on every DVR clip if none is selected.
+For flights you've already paired by hand: drop each DVR or stickcam clip roughly over its HD footage, select them and Start. Each clip is synced to the HD footage it overlaps. Only the selected flights are touched.
 
-The **results table** lists every flight. Rows marked **check** were matched in an unusual way (no ARMED, no prop sound, file order only), so it's worth a quick look.
+### PiP Layout
 
-The **first run on a trip** has to read the footage. Expect a few minutes for a day of flying on a hard drive. After that the analysis is cached and re-runs take seconds. Time estimates appear on the buttons once the panel has done one run on your PC.
+Resizes the selected DVR and stickcam clips and moves them to their spot. Drag the DVR or stickcam box in the preview: it snaps to the corners, the middle of each edge, or the centre. Sizes are in pixels: the DVR defaults to 973 px wide (76 % of the Orqa's 1280 px), the stickcam to the same width as the DVR.
+
+Match & Sync and Sync have a **PiP Layout** tickbox that does the same right after syncing. The settings are shared and remembered.
+
+<p align="center"><img src="panel-pip.png" width="480" alt="PiP Layout: DVR bottom-right, stickcam bottom-left, 973 px wide"></p>
+
+### While it runs
+
+The progress bar shows the percentage and the time so far. Below it, every file is listed in its column (DVR, HD, stickcam) with each step as it happens: **ARMED** found, **props** heard, matched by **clock** or **motion**, lined up by **sound**, and so on. Green means it worked, red means that step didn't. The counters on top show how many were matched and synced, and how many have no match.
+
+**Stop** on the progress line: the first click stops reading new footage and lines up what's already analysed. A second click cancels everything, and nothing in the sequence changes.
+
+The **first run on a trip** has to read the footage: expect a few minutes for a day of flying on a hard drive. After that the analysis is cached and re-runs take seconds.
+
+## Tips for the stickcam
+
+The stickcam is lined up by sound, so it helps if both cameras hear the same thing just before takeoff:
+- Start both cameras, then **say something or clap 2–3 times with uneven gaps**, next to the quad, within about 30 s.
+- **Say something different each pack** ("pack 4, day 1"). If you always say exactly the same thing, a clip can match another pack's just as well.
+- Steady sounds (wind, a constant motor whine) and music with a regular beat don't help.
 
 ## Troubleshooting
 
 - **FPV Sync isn't under Window → Extensions** (Premiere's top menu bar): run `install.bat` again and restart Premiere.
 - **"python" or "ffmpeg" errors:** install them (see [What you need](#what-you-need)), run `install.bat` again, and restart the PC so the new PATH is picked up.
-- **A flight is off or unmatched:** very loud places (race events, wind) can hide the prop sound. Those flights stay unmatched or get a **check** mark; sync them by hand or with **Sync selected**.
+- **A camera shows as "Unknown source":** its files have no camera name in them, as with stabilised exports. Just set its role like any other.
+- **A flight is off or unmatched:** very loud places (race events, wind) can hide the prop sound. Those flights stay unmatched or get a **check** mark; sync them by hand or with **Sync**.
 - **Something else:** `%APPDATA%\Adobe\CEP\extensions\fpvsync\panel_log.txt` shows what the panel asked Premiere to do, and `timing_log.jsonl` next to it shows what each run did.
 
 Windows only (it hasn't been tried on macOS).
