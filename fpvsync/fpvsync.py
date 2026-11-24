@@ -11,7 +11,7 @@ Workflow
 Rule: the first DVR frame showing "ARMED" is placed one sequence frame before
 the frame in which the HD footage's prop sound starts.  HD clips never move.
 """
-import argparse, json, math, os, re, subprocess, sys, time, uuid
+import argparse, json, math, os, re, subprocess, sys, threading, time, uuid
 import urllib.parse
 import xml.etree.ElementTree as ET
 import numpy as np
@@ -53,6 +53,27 @@ def run(cmd):
     return subprocess.run(cmd, capture_output=True, check=True).stdout
 
 
+def run_skippable(cmd, path):
+    """run(), but a Skip click on `path` while it reads (when _abort is on) kills ffmpeg: SkipFile."""
+    if not getattr(_abort, "on", False):
+        return run(cmd)
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    parts = []
+    try:
+        while True:
+            buf = p.stdout.read(1 << 20)
+            if not buf:
+                break
+            parts.append(buf)
+            if is_skipped(path):
+                raise SkipFile(path)
+    finally:
+        p.stdout.close()
+        p.kill()
+        p.wait()
+    return b"".join(parts)
+
+
 STOP_FILE = None          # set per panel job; the panel creates it when you click Stop
 UNREAD = set()            # recordings a stopped run never got to (first file of each)
 
@@ -60,6 +81,46 @@ UNREAD = set()            # recordings a stopped run never got to (first file of
 def stop_requested():
     """Stop clicked: finish the file in hand, read no more footage, place what's known."""
     return bool(STOP_FILE) and os.path.exists(STOP_FILE)
+
+
+SKIP_FILE = None          # set per panel job: the files you clicked Skip on (JSON list of paths)
+SKIPPED_SEEN = set()      # files this run left out because they were skipped (processed if un-skipped)
+_skip_state = [None, frozenset()]
+_abort = threading.local()            # on while a file is scanned or listened to: a Skip click stops it right away
+
+
+class SkipFile(Exception):
+    pass
+
+
+def is_skipped(path):
+    """Is this file skipped right now? (the panel rewrites skip.json on every click; re-read on change)"""
+    if not SKIP_FILE or not path:
+        return False
+    try:
+        st = os.stat(SKIP_FILE)
+    except OSError:
+        return False
+    m = (st.st_mtime_ns, st.st_size)
+    if m != _skip_state[0]:
+        try:
+            _skip_state[1] = frozenset(json.load(open(SKIP_FILE, encoding="utf-8")))
+            _skip_state[0] = m              # only once read whole: a half-written file is read again
+        except Exception:
+            pass
+    return path in _skip_state[1]
+
+
+def skip_now(path):
+    """Skipped right now: noted (so an un-skip processes it again) and left alone by this step."""
+    if is_skipped(path):
+        SKIPPED_SEEN.add(path)
+        return True
+    return False
+
+
+DVR_MIC = set()           # DVR files whose audio is kept (goggles with a mic): their sound helps matching
+IMAGE_EXT = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".psd", ".bmp", ".gif", ".webp", ".exr", ".dpx")
 
 
 def ensure_ffmpeg():
@@ -283,6 +344,8 @@ def _armed_runs(path, step=ARMED_STEP, first_only=False, dur=None, start=0.0):
     t0 = (f0 - 0.5) / fps if f0 > 0 else 0.0     # mid-frame, so the first frame read is exactly f0
     out, cur, missed = [], None, 0
     for i, f in dvr_frames(path, start=t0, step=step, dur=dur):
+        if i % 25 == 0 and getattr(_abort, "on", False) and is_skipped(path):
+            raise SkipFile(path)
         s_ = armed_score(f)
         if s_ >= ARM_THRESHOLD:
             if cur is None:
@@ -412,7 +475,7 @@ def audio_envelope(path, sr=48000, block_ms=5, start=0.0, dur=None):
     if dur:
         cmd += ["-t", f"{dur:.3f}"]
     with DISK:
-        raw = run(cmd + ["-map", "0:a:0", "-ac", "1", "-ar", str(sr), "-f", "f32le", "-"])
+        raw = run_skippable(cmd + ["-map", "0:a:0", "-ac", "1", "-ar", str(sr), "-f", "f32le", "-"], path)
     a = np.frombuffer(raw, np.float32).astype(np.float64)
     if len(a) < sr // 10:                       # nothing there (window past the end of the file)
         return np.zeros(0), block_ms / 1000
@@ -795,174 +858,218 @@ def sync_clips(fps, clips, dvr_re, act_re, lead=1, prior_window=30.0, only_selec
                 progress(f, creep["label"], None)
 
     threading.Thread(target=creeper, name="creep", daemon=True).start()
-    for gi, g in enumerate(groups):
-        d = g[0]
-        creep_to(0.85 + 0.15 * (gi + 0.9) / max(1, len(groups)), f"Syncing {base(d)}")
-        row = {"id": d["id"], "dvr": base(d) + (f" (+{len(g) - 1} split)" if len(g) > 1 else ""),
-               "status": None, "path": d["path"]}
-        rows.append(row)
-        if stop_requested() and peek_cache(ARMED, d["path"]) is None:
-            row["status"] = "skipped"; row["why"] = "stopped before it was analysed"; continue
-        g_start, g_end = g[0]["start"], g[-1]["end"]
-        over = [a for a in act if min(g_end, a["end"]) > max(g_start, a["start"])]
-        if not over:
-            row["status"] = "skipped"; row["why"] = "no overlapping HD clip"; continue
-        missing = [c["path"] for c in g + over if not os.path.exists(c["path"])]
-        if missing:
-            row["status"] = "skipped"; row["why"] = "file not found: " + missing[0]; continue
-        ev(d["path"], "arm", "run", "finding ARMED")
-        arm = armed(d)
-        if not arm:
-            ev(d["path"], "arm", "bad", "no ARMED")
-            row["status"] = "skipped"; row["why"] = "ARMED not found on DVR"; continue
-        ev(d["path"], "arm", "ok", f"ARMED {mmss(arm[0])}")
-        t_arm, f_arm, score, _ = arm
-        row.update(armed_s=round(t_arm, 3), armed_score=round(score, 2))
-        arm_seq = d["start"] + (t_arm - d["src0"]) / fd       # where ARMED sits now (seq frames)
+    # a flight you skip is left out; one you un-skip while it runs is done after the others
+    work, row_of, requeued = list(enumerate(groups)), {}, set()
 
-        # the pair is whatever HD footage the DVR overlaps (placed roughly over it is enough): its prop
-        # starts, heard from the start of each overlapping HD clip as Match & sync does (first 45 s, then
-        # to 75 s), kept if visible on the timeline. Only if none: wider around where the DVR was dropped
-        # (a takeoff later in the recording)
-        def gather(stage):
-            cands, hidden = [], 0
-            for a in over:
-                if stage < 2:
-                    found = head_props(a["path"], further=stage == 1)
-                else:
-                    pred = a["src0"] + (arm_seq - a["start"]) * fd
-                    w0, wd = round(max(0.0, pred - SYNC_WIDE)), round(2 * SYNC_WIDE)
-                    if pred + SYNC_WIDE < 0 or w0 >= media_info(a["path"])[0]:
-                        continue
-                    found = cached(f"{PROPS}@{w0}+{wd}", a["path"],
-                                   lambda: detect_prop_onsets(a["path"], start=w0, dur=wd)) or []
-                for t, jump in found:
-                    pos = a["start"] + (t - a["src0"]) / fd
-                    if a["start"] <= pos < a["end"]:
-                        cands.append((pos, t, jump, a))
-                    else:
-                        hidden += 1
-            return cands, hidden
+    def requeue():
+        for gi_, g_ in enumerate(groups):
+            k_ = g_[0]["path"]
+            if k_ in SKIPPED_SEEN and not is_skipped(k_) and k_ not in requeued:
+                requeued.add(k_)
+                SKIPPED_SEEN.discard(k_)
+                if row_of.get(id(g_[0])) in rows:
+                    rows.remove(row_of[id(g_[0])])
+                work.append((gi_, g_))
 
-        ev(d["path"], "props", "run", "listening to the HD")
-        cands, hidden = gather(0)
-        for stage in (1, 2):
-            if cands or stop_requested():
-                break
-            ev(d["path"], "props", "run", "Listening further")
-            cands, hidden = gather(stage)
-        ev(d["path"], "props", "ok" if cands else "bad",
-           f"props → {base(cands[0][3])}" if len(cands) == 1 else f"{len(cands)} prop starts" if cands else "no props")
-        if not cands:
-            row["status"] = "skipped"
-            row["why"] = ("prop start is trimmed out of the HD clip" if hidden
-                          else "no prop-sound start found on HD")
-            continue
-        if len(cands) > 1:
-            creep["label"] = f"{base(d)}: {len(cands)} prop sounds, comparing the motion"
-            # several prop sounds: the one whose following flight moves like the DVR's is the takeoff
-            ds = motion_signal(d["path"], t_arm + MOTION_T0, True)
-            scored = [(motion_score(ds, motion_signal(c[3]["path"], c[1] + MOTION_T0, False)), c) for c in cands]
-            sc, best = max(scored, key=lambda x: x[0])
-            if sc >= 0.3:
-                pos, t_prop, jump, a = best
-                row["note"] = f"{len(cands)} prop sounds; picked the one whose motion matches (score {sc:.2f})"
-            else:
-                cands_near = min(cands, key=lambda c: abs(c[0] - arm_seq))
-                pos, t_prop, jump, a = cands_near
-                row["note"] = f"{len(cands)} prop sounds and motion unclear; used the one nearest where the DVR sits"
-        else:
-            pos, t_prop, jump, a = cands[0]
-        t_pos = d["src0"] + (pos - d["start"]) * fd            # DVR time of the prop start, as placed now
-        arm_win = [(t_pos - prior_window - 3, t_pos + prior_window + 3)]
-        # (where the DVR was dropped doesn't pick the ARMED: it's only roughly placed. The motion does:)
-        # motion doesn't fit: maybe armed, disarmed and armed again; try every ARMED in the DVR
+    for gi, g in work:
         try:
-            ap_sig = motion_signal(a["path"], t_prop + MOTION_T0, False)
-            s0 = motion_score(motion_signal(d["path"], t_arm + MOTION_T0, True), ap_sig)
-        except Exception:
-            s0, ap_sig = 1.0, None
-        if s0 < WEAK_SCORE and ap_sig is not None:
-            best = (s0, t_arm)
-            creep["label"] = f"{base(d)}: motion doesn't fit, trying its other ARMEDs"
-            tried = set()
-            # around the prop start first; the whole DVR only if nothing there fits (the clip may
-            # sit far from where it belongs)
-            for runs_ in (lambda: armed_runs_in(d["path"], arm_win),
-                          lambda: cached(ARMED + "_all", d["path"], lambda: detect_armed_runs(d["path"])) or []):
-                for r in runs_():
-                    if abs(r[0] - t_arm) < 2 or round(r[0], 2) in tried:
-                        continue
-                    tried.add(round(r[0], 2))
-                    sc = motion_score(motion_signal(d["path"], r[0] + MOTION_T0, True), ap_sig)
-                    if sc > best[0]:
-                        best = (sc, r[0])
-                if best[0] >= s0 + 0.1:
+            d = g[0]
+            creep_to(0.85 + 0.15 * (gi + 0.9) / max(1, len(groups)), f"Syncing {base(d)}")
+            row = {"id": d["id"], "dvr": base(d) + (f" (+{len(g) - 1} split)" if len(g) > 1 else ""),
+                   "status": None, "path": d["path"]}
+            rows.append(row)
+            row_of[id(d)] = row
+            if is_skipped(d["path"]):
+                SKIPPED_SEEN.add(d["path"])
+                row["status"] = "skipped"; row["why"] = "skipped by you"
+                ev(d["path"], done="skipped")
+                continue
+            if stop_requested() and peek_cache(ARMED, d["path"]) is None:
+                row["status"] = "skipped"; row["why"] = "stopped before it was analysed"; continue
+            g_start, g_end = g[0]["start"], g[-1]["end"]
+            over = [a for a in act if min(g_end, a["end"]) > max(g_start, a["start"])]
+            if not over:
+                row["status"] = "skipped"; row["why"] = "no overlapping HD clip"; continue
+            missing = [c["path"] for c in g + over if not os.path.exists(c["path"])]
+            if missing:
+                row["status"] = "skipped"; row["why"] = "file not found: " + missing[0]; continue
+            ev(d["path"], "arm", "run", "finding ARMED")
+            arm = armed(d)
+            if not arm:
+                ev(d["path"], "arm", "bad", "no ARMED")
+                row["status"] = "skipped"; row["why"] = "ARMED not found on DVR"; continue
+            ev(d["path"], "arm", "ok", f"ARMED {mmss(arm[0])}")
+            t_arm, f_arm, score, _ = arm
+            row.update(armed_s=round(t_arm, 3), armed_score=round(score, 2))
+            arm_seq = d["start"] + (t_arm - d["src0"]) / fd       # where ARMED sits now (seq frames)
+
+            # the pair is whatever HD footage the DVR overlaps (placed roughly over it is enough): its prop
+            # starts, heard from the start of each overlapping HD clip as Match & sync does (first 45 s, then
+            # to 75 s), kept if visible on the timeline. Only if none: wider around where the DVR was dropped
+            # (a takeoff later in the recording)
+            def gather(stage):
+                cands, hidden = [], 0
+                for a in over:
+                    if stage < 2:
+                        found = head_props(a["path"], further=stage == 1)
+                    else:
+                        pred = a["src0"] + (arm_seq - a["start"]) * fd
+                        w0, wd = round(max(0.0, pred - SYNC_WIDE)), round(2 * SYNC_WIDE)
+                        if pred + SYNC_WIDE < 0 or w0 >= media_info(a["path"])[0]:
+                            continue
+                        found = cached(f"{PROPS}@{w0}+{wd}", a["path"],
+                                       lambda: detect_prop_onsets(a["path"], start=w0, dur=wd)) or []
+                    for t, jump in found:
+                        pos = a["start"] + (t - a["src0"]) / fd
+                        if a["start"] <= pos < a["end"]:
+                            cands.append((pos, t, jump, a))
+                        else:
+                            hidden += 1
+                return cands, hidden
+
+            ev(d["path"], "props", "run", "listening to the HD")
+            cands, hidden = gather(0)
+            for stage in (1, 2):
+                if cands or stop_requested():
                     break
-            if best[1] != t_arm and best[0] >= s0 + 0.1:
-                t_arm = best[1]
-                row["armed_s"] = round(t_arm, 3)
-                row["note"] = (row.get("note", "") + " armed more than once: used the arming whose motion "
-                               f"matches ({best[0]:.2f})").strip()
-        row.update(action=base(a), props_s=round(t_prop, 3), jump_db=round(jump, 1))
+                ev(d["path"], "props", "run", "Listening further")
+                cands, hidden = gather(stage)
+            ev(d["path"], "props", "ok" if cands else "bad",
+               f"props → {base(cands[0][3])}" if len(cands) == 1 else f"{len(cands)} prop starts" if cands else "no props")
+            if not cands:
+                row["status"] = "skipped"
+                row["why"] = ("prop start is trimmed out of the HD clip" if hidden
+                              else "no prop-sound start found on HD")
+                continue
+            if len(cands) > 1:
+                creep["label"] = f"{base(d)}: {len(cands)} prop sounds, comparing the motion"
+                # several prop sounds: the one whose following flight moves like the DVR's is the takeoff
+                ds = motion_signal(d["path"], t_arm + MOTION_T0, True)
+                scored = [(motion_score(ds, motion_signal(c[3]["path"], c[1] + MOTION_T0, False)), c) for c in cands]
+                sc, best = max(scored, key=lambda x: x[0])
+                if sc >= 0.3:
+                    pos, t_prop, jump, a = best
+                    row["note"] = f"{len(cands)} prop sounds; picked the one whose motion matches (score {sc:.2f})"
+                else:
+                    cands_near = min(cands, key=lambda c: abs(c[0] - arm_seq))
+                    pos, t_prop, jump, a = cands_near
+                    row["note"] = f"{len(cands)} prop sounds and motion unclear; used the one nearest where the DVR sits"
+            else:
+                pos, t_prop, jump, a = cands[0]
+            t_pos = d["src0"] + (pos - d["start"]) * fd            # DVR time of the prop start, as placed now
+            arm_win = [(t_pos - prior_window - 3, t_pos + prior_window + 3)]
+            # (where the DVR was dropped doesn't pick the ARMED: it's only roughly placed. The motion does:)
+            # motion doesn't fit: maybe armed, disarmed and armed again; try every ARMED in the DVR
+            try:
+                ap_sig = motion_signal(a["path"], t_prop + MOTION_T0, False)
+                s0 = motion_score(motion_signal(d["path"], t_arm + MOTION_T0, True), ap_sig)
+            except Exception:
+                s0, ap_sig = 1.0, None
+            if s0 < WEAK_SCORE and ap_sig is not None:
+                best = (s0, t_arm)
+                creep["label"] = f"{base(d)}: motion doesn't fit, trying its other ARMEDs"
+                tried = set()
+                # around the prop start first; the whole DVR only if nothing there fits (the clip may
+                # sit far from where it belongs)
+                for runs_ in (lambda: armed_runs_in(d["path"], arm_win),
+                              lambda: cached(ARMED + "_all", d["path"], lambda: detect_armed_runs(d["path"])) or []):
+                    for r in runs_():
+                        if abs(r[0] - t_arm) < 2 or round(r[0], 2) in tried:
+                            continue
+                        tried.add(round(r[0], 2))
+                        sc = motion_score(motion_signal(d["path"], r[0] + MOTION_T0, True), ap_sig)
+                        if sc > best[0]:
+                            best = (sc, r[0])
+                    if best[0] >= s0 + 0.1:
+                        break
+                if best[1] != t_arm and best[0] >= s0 + 0.1:
+                    t_arm = best[1]
+                    row["armed_s"] = round(t_arm, 3)
+                    row["note"] = (row.get("note", "") + " armed more than once: used the arming whose motion "
+                                   f"matches ({best[0]:.2f})").strip()
+            row.update(action=base(a), props_s=round(t_prop, 3), jump_db=round(jump, 1))
 
-        sound_frame = a["start"] + math.floor((t_prop - a["src0"]) / fd + 1e-9)
-        edge = ((t_prop - a["src0"]) / fd) % 1
-        new_start = sound_frame - dvr_lead(d["path"], lead) - math.ceil((t_arm - d["src0"]) / fd - 1e-9)
-        delta = new_start - d["start"]
-        if edge < 0.15 or edge > 0.85:
-            row["note"] = (row.get("note", "") + " prop start near a frame edge, check by eye").strip()
+            sound_frame = a["start"] + math.floor((t_prop - a["src0"]) / fd + 1e-9)
+            edge = ((t_prop - a["src0"]) / fd) % 1
+            new_start = sound_frame - dvr_lead(d["path"], lead) - math.ceil((t_arm - d["src0"]) / fd - 1e-9)
+            delta = new_start - d["start"]
+            if edge < 0.15 or edge > 0.85:
+                row["note"] = (row.get("note", "") + " prop start near a frame edge, check by eye").strip()
 
-        movers = []
-        for c in g:
-            linked = c.get("linked") or [x["id"] for x in clips if x["kind"] == "audio"
-                                         and x.get("path") == c["path"]
-                                         and (x["start"], x["end"]) == (c["start"], c["end"])]
-            movers += [c["id"]] + [i for i in linked if i in by_id and i != c["id"]]
-        row.update(move_frames=delta, movers=list(dict.fromkeys(movers)),
-                   status="in sync" if delta == 0 else "move")
-        log(f"  {row['dvr']}: ARMED {t_arm:.3f}s (score {score:.2f}) | props {base(a)} "
-            f"{t_prop:.3f}s (+{jump:.0f} dB) -> {delta:+d} frames")
+            movers = []
+            for c in g:
+                linked = c.get("linked") or [x["id"] for x in clips if x["kind"] == "audio"
+                                             and x.get("path") == c["path"]
+                                             and (x["start"], x["end"]) == (c["start"], c["end"])]
+                movers += [c["id"]] + [i for i in linked if i in by_id and i != c["id"]]
+            row.update(move_frames=delta, movers=list(dict.fromkeys(movers)),
+                       status="in sync" if delta == 0 else "move")
+            log(f"  {row['dvr']}: ARMED {t_arm:.3f}s (score {score:.2f}) | props {base(a)} "
+                f"{t_prop:.3f}s (+{jump:.0f} dB) -> {delta:+d} frames")
+
+        finally:
+            requeue()
 
     # stickcam clips: lined up by sound with the HD clip they sit over
-    for st_ in sticks:
-        if stop_requested():
-            break
-        creep_to(creep["f1"], f"Stickcam {base(st_)}: listening")
-        row = {"id": st_["id"], "dvr": base(st_), "kind": "stick", "status": None, "path": st_["path"]}
-        rows.append(row)
-        under = [a for a in act if min(st_["end"], a["end"]) > max(st_["start"], a["start"])]
-        if not under:
-            row["status"] = "skipped"; row["why"] = "no HD clip under it"
-            ev(st_["path"], "arm", "bad", "no HD clip under it")
-            continue
-        a = max(under, key=lambda a: min(st_["end"], a["end"]) - max(st_["start"], a["start"]))
-        if not (os.path.exists(st_["path"]) and os.path.exists(a["path"])):
-            row["status"] = "skipped"; row["why"] = "file not found"
-            continue
-        ev(st_["path"], "arm", "run", f"listening with {base(a)}")
-        h = sound_print(a["path"], STICK_HD_LISTEN)
-        r = None
-        for dur in (STICK_LISTEN, None):
-            r = sound_offset(h, sound_print(st_["path"], dur))
-            if r and r[1] >= STICK_MIN_Z and r[2] >= STICK_MIN_RATIO:
+    swork, srow_of, srequeued = list(sticks), {}, set()
+
+    def srequeue():
+        for c_ in sticks:
+            if c_["path"] in SKIPPED_SEEN and not is_skipped(c_["path"]) and c_["path"] not in srequeued:
+                srequeued.add(c_["path"])
+                SKIPPED_SEEN.discard(c_["path"])
+                if srow_of.get(id(c_)) in rows:
+                    rows.remove(srow_of[id(c_)])
+                swork.append(c_)
+
+    for st_ in swork:
+        try:
+            if stop_requested():
                 break
+            creep_to(creep["f1"], f"Stickcam {base(st_)}: listening")
+            row = {"id": st_["id"], "dvr": base(st_), "kind": "stick", "status": None, "path": st_["path"]}
+            rows.append(row)
+            srow_of[id(st_)] = row
+            if is_skipped(st_["path"]):
+                SKIPPED_SEEN.add(st_["path"])
+                row["status"] = "skipped"; row["why"] = "skipped by you"
+                ev(st_["path"], done="skipped")
+                continue
+            under = [a for a in act if min(st_["end"], a["end"]) > max(st_["start"], a["start"])]
+            if not under:
+                row["status"] = "skipped"; row["why"] = "no HD clip under it"
+                ev(st_["path"], "arm", "bad", "no HD clip under it")
+                continue
+            a = max(under, key=lambda a: min(st_["end"], a["end"]) - max(st_["start"], a["start"]))
+            if not (os.path.exists(st_["path"]) and os.path.exists(a["path"])):
+                row["status"] = "skipped"; row["why"] = "file not found"
+                continue
+            ev(st_["path"], "arm", "run", f"listening with {base(a)}")
+            h = sound_print(a["path"], STICK_HD_LISTEN)
             r = None
-        if not r:
-            row["status"] = "skipped"
-            row["why"] = f"its sound doesn't match the start of {base(a)}"
-            ev(st_["path"], "arm", "bad", "no sound match")
-            continue
-        lag, z, _ = r
-        new_start = a["start"] + int(round((st_["src0"] - a["src0"] - lag) / fd))
-        delta = new_start - st_["start"]
-        linked = st_.get("linked") or [x["id"] for x in clips if x["kind"] == "audio" and x.get("path") == st_["path"]
-                                       and (x["start"], x["end"]) == (st_["start"], st_["end"])]
-        row.update(action=base(a), detail=f"stickcam · sound → {base(a)}", move_frames=delta,
-                   movers=list(dict.fromkeys([st_["id"]] + [i for i in linked if i in by_id and i != st_["id"]])),
-                   status="in sync" if delta == 0 else "move")
-        ev(st_["path"], "arm", "ok", f"sound → {base(a)}")
-        log(f"  {base(st_)}: sound lines up with {base(a)} (z {z:.0f}) -> {delta:+d} frames")
+            for dur in (STICK_LISTEN, None):
+                r = sound_offset(h, sound_print(st_["path"], dur))
+                if r and r[1] >= STICK_MIN_Z and r[2] >= STICK_MIN_RATIO:
+                    break
+                r = None
+            if not r:
+                row["status"] = "skipped"
+                row["why"] = f"its sound doesn't match the start of {base(a)}"
+                ev(st_["path"], "arm", "bad", "no sound match")
+                continue
+            lag, z, _ = r
+            new_start = a["start"] + int(round((st_["src0"] - a["src0"] - lag) / fd))
+            delta = new_start - st_["start"]
+            linked = st_.get("linked") or [x["id"] for x in clips if x["kind"] == "audio" and x.get("path") == st_["path"]
+                                           and (x["start"], x["end"]) == (st_["start"], st_["end"])]
+            row.update(action=base(a), detail=f"stickcam · sound → {base(a)}", move_frames=delta,
+                       movers=list(dict.fromkeys([st_["id"]] + [i for i in linked if i in by_id and i != st_["id"]])),
+                       status="in sync" if delta == 0 else "move")
+            ev(st_["path"], "arm", "ok", f"sound → {base(a)}")
+            log(f"  {base(st_)}: sound lines up with {base(a)} (z {z:.0f}) -> {delta:+d} frames")
+
+        finally:
+            srequeue()
 
     creep["stop"] = True
 
@@ -1018,7 +1125,8 @@ def sync_clips(fps, clips, dvr_re, act_re, lead=1, prior_window=30.0, only_selec
         current.update({i: ready["move_frames"] for i in ready["movers"]})
         pending.remove(ready)
     for r in rows:
-        ev(r.get("path"), done="matched" if r["status"] in ("move", "in sync") else "nomatch")
+        ev(r.get("path"), done="matched" if r["status"] in ("move", "in sync")
+           else "skipped" if r["status"] == "skipped" and r.get("why") == "skipped by you" else "nomatch")
     return rows
 
 
@@ -1096,12 +1204,22 @@ MATCH_TAU = 0.2                                       # weakest motion score acc
 WEAK_SCORE = 0.3                                      # below this, look for a later ARMED too
 
 
+STILL_S = 5.0                 # a still image (logo, title card) counts as Premiere's default still length
+
+
 def media_info(path):
-    """[duration_s, creation_time_iso] (cached)."""
+    """[duration_s, creation_time_iso] (cached). A still image has no duration: STILL_S; anything else
+    without one (unreadable file) 0, so one odd file in the selection can't stop a run."""
     def f():
-        out = json.loads(run(["ffprobe", "-v", "error", "-show_entries",
-                              "format=duration:format_tags=creation_time", "-of", "json", path]))["format"]
-        return [float(out["duration"]), out.get("tags", {}).get("creation_time", "")]
+        try:
+            out = json.loads(run(["ffprobe", "-v", "error", "-show_entries",
+                                  "format=duration:format_tags=creation_time", "-of", "json", path]))["format"]
+        except Exception:
+            out = {}
+        dur = out.get("duration")
+        if dur in (None, "N/A"):
+            dur = STILL_S if path.lower().endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff", ".psd", ".bmp", ".gif")) else 0.0
+        return [float(dur), out.get("tags", {}).get("creation_time", "")]
     return cached("info", path, f)
 
 
@@ -1352,21 +1470,23 @@ def _ts(ct):
         return None
 
 
-def chain_files(paths, max_gap, follower_ok=lambda p: True):
-    """Group split recordings: the next file starts (by its own clock) right where the previous ended."""
+def chain_files(paths, max_gap, follower_ok=lambda p, gap: True):
+    """Group split recordings: the next file starts (by its own clock) right where the previous ended.
+    follower_ok(path, gap_s) has the last word on joining."""
     chains = []
     for p in sorted(paths, key=lambda p: (os.path.dirname(p), file_number(p), os.path.basename(p))):
         if chains:
             q = chains[-1][-1]
             (dq, cq), (_, cp_) = media_info(q), media_info(p)
             tq, tp = _ts(cq), _ts(cp_)
-            if tq is not None and tp is not None and -3 <= tp - (tq + dq) <= max_gap and follower_ok(p):
+            if tq is not None and tp is not None and -3 <= tp - (tq + dq) <= max_gap and follower_ok(p, tp - (tq + dq)):
                 chains[-1].append(p)
                 continue
         chains.append([p])
     return chains
 
 
+SEAMLESS_S = 2.0             # a DVR file starting this soon after the last ended: the DVR split it itself
 CLOCK_MIN = 1262304000.0     # 2010-01-01: an earlier date means the camera lost its clock
 RUN_GAP = 50                 # file numbers; a bigger jump (or a reset) starts a new run
 
@@ -2159,8 +2279,10 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
 
     credited = set()
 
-    def follower_ok(p):                    # starts within 15 s of the previous DVR ending: same flight,
-        start("dvr", 8.0, f"DVR {os.path.basename(p)}")   # unless it shows ARMED in its first minute
+    def follower_ok(p, gap):               # starts within 15 s of the previous DVR ending: same flight,
+        if gap <= SEAMLESS_S:              # unless it shows ARMED in its first minute; but a file the
+            return True                    # DVR split on its own (no gap) is one recording, re-arm or not
+        start("dvr", 8.0, f"DVR {os.path.basename(p)}")
         res = not armed_early(p)
         credited.add(p)
         tick(dvr_cost.get(p, 1.0), "dvr", f"DVR {os.path.basename(p)}")
@@ -2178,11 +2300,23 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
                 break
             log(f"DVR {i + 1}/{len(dchains)}: {os.path.basename(ch[0])}")
             todo = [p_ for p_ in ch if p_ not in credited]
-            start("dvr", sum(dvr_cost.get(p_, 1.0) for p_ in todo), f"DVR {os.path.basename(ch[0])}")
             for p_ in ch[1:]:
                 ev(p_, "arm", "ok", f"continues {os.path.basename(ch[0])}", done="part")
+            if is_skipped(ch[0]):
+                SKIPPED_SEEN.add(ch[0])
+                ev(ch[0], done="skipped")
+                continue
+            start("dvr", sum(dvr_cost.get(p_, 1.0) for p_ in todo), f"DVR {os.path.basename(ch[0])}")
             ev(ch[0], "arm", "run", "finding ARMED")
-            a = armed(ch[0])
+            _abort.on = True
+            try:
+                a = armed(ch[0])
+            except SkipFile:                # skipped while its scan ran
+                SKIPPED_SEEN.add(ch[0])
+                ev(ch[0], done="skipped")
+                continue
+            finally:
+                _abort.on = False
             if a:
                 D.append((ch, a[0]))
                 ev(ch[0], "arm", "ok", f"ARMED {mmss(a[0])}")
@@ -2202,11 +2336,23 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
                 log(f"Stopped: {len(achains) - i} HD recording(s) not analysed")
                 break
             log(f"HD {i + 1}/{len(achains)}: {os.path.basename(ch[0])}")
-            start("hd", sum(hd_cost.get(p_, 1.0) for p_ in ch), f"HD {os.path.basename(ch[0])}")
             for p_ in ch[1:]:
                 ev(p_, "arm", "ok", f"continues {os.path.basename(ch[0])}", done="part")
+            if is_skipped(ch[0]):
+                SKIPPED_SEEN.add(ch[0])
+                ev(ch[0], done="skipped")
+                continue
+            start("hd", sum(hd_cost.get(p_, 1.0) for p_ in ch), f"HD {os.path.basename(ch[0])}")
             ev(ch[0], "arm", "run", "listening")
-            cues = find_prop_starts(ch[0], whole=False, first=FIRST_LISTEN)
+            _abort.on = True
+            try:
+                cues = find_prop_starts(ch[0], whole=False, first=FIRST_LISTEN)
+            except SkipFile:                # skipped while it listened
+                SKIPPED_SEEN.add(ch[0])
+                ev(ch[0], done="skipped")
+                continue
+            finally:
+                _abort.on = False
             ev(ch[0], "arm", "ok" if cues else "bad",
                (f"props {mmss(cues[0])}" + (f" +{len(cues) - 1}" if len(cues) > 1 else "")) if cues else "no props")
             if not cues:
@@ -2237,6 +2383,17 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
         raise errors[0]
     learn_pace({"hd": est["hd"], "dvr": est["dvr"]}, {"hd": est["hd_end"], "dvr": est["dvr_end"]})
     dchains, achains = out["dchains"], out["achains"]
+    for lst in (D, A):
+        drop = [x for x in lst if is_skipped(x[0][0])]
+        for x in drop:
+            lst.remove(x)
+            SKIPPED_SEEN.add(x[0][0])
+            ev(x[0][0], done="skipped")
+    for lst in (no_arm, quiet):
+        for ch in [c for c in lst if is_skipped(c[0])]:
+            lst.remove(ch)
+            SKIPPED_SEEN.add(ch[0])
+            ev(ch[0], done="skipped")
     log(f"{len(dchains)} DVR recordings, {len(achains)} HD recordings (split files joined)")
     progress(0.95, "Stopped: lining up what's analysed" if stop_requested() else "Matching flights", 1.0)
     M = LazyMotion(D, A)                   # motion compared only where it's needed
@@ -2259,6 +2416,8 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
         log(f"Clocks don't line up: listening further into the HD recordings")
         progress(0.95, "Clocks don't line up: listening further into the HD clips", 3.0 * len(achains))
         for ch in achains:
+            if skip_now(ch[0]) or stop_requested():
+                continue
             have = [t for c_, t in A if c_ is ch]
             if not have:
                 ev(ch[0], "more", "run", "Listening further")
@@ -2321,7 +2480,7 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
                     for r in runs:
                         for ch in achains:
                             ta = _ts(media_info(ch[0])[1])
-                            if id(ch) in used_a or ta is None:
+                            if id(ch) in used_a or ta is None or skip_now(ch[0]):
                                 continue
                             t_p = TD[i] + r[0] - ta - g
                             if not 0 < t_p < media_info(ch[0])[0] - 1:
@@ -2342,7 +2501,7 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
                 for g in gs:
                     for ch in achains:
                         ta = _ts(media_info(ch[0])[1])
-                        if id(ch) in used_a or ta is None:
+                        if id(ch) in used_a or ta is None or skip_now(ch[0]):
                             continue
                         a0 = ta + g - TD[i]              # that HD recording's start, in this DVR's time
                         a1 = a0 + media_info(ch[0])[0]
@@ -2395,7 +2554,7 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
         used_a = {chain_id(j) for _, j, _ in got} | {id(p["action"]) for p in extra}
         for ch in no_arm:
             td = _ts(media_info(ch[0])[1])
-            if td is None:
+            if td is None or skip_now(ch[0]):
                 continue
             near = sorted((min(abs(TD[i2] - td) for _, i2, _ in grp), grp) for grp in groups)
             best = None
@@ -2403,7 +2562,7 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
                 g = min(grp, key=lambda x: abs(TD[x[1]] - td))[0]
                 for ach in achains:
                     ta = _ts(media_info(ach[0])[1])
-                    if id(ach) in used_a or ta is None:
+                    if id(ach) in used_a or ta is None or skip_now(ach[0]):
                         continue
                     # several stretches through the flight; each gives the offset between the files
                     offs = []
@@ -2432,7 +2591,7 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
         taken_a = {chain_id(j) for _, j, _ in got} | {id(p["action"]) for p in extra}
         add = []
         for ch in achains:
-            if id(ch) in taken_a:
+            if id(ch) in taken_a or skip_now(ch[0]):
                 continue
             have = [t for c_, t in A if c_ is ch]
             ev(ch[0], "more", "run", "Listening further")
@@ -2546,7 +2705,7 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
             for t_p in cues:
                 for dch in dchains:
                     td = _ts(media_info(dch[0])[1])
-                    if td is None:
+                    if td is None or skip_now(dch[0]):
                         continue
                     for g in gaps_near(td):
                         expect = ta + t_p + g - td               # where ARMED should be in this DVR
@@ -2638,8 +2797,8 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
     used_d = {id(p["dvr"]) for p in pairs}
     used_a = {id(p["action"]) for p in pairs}
     deaf = [ch for ch in achains if id(ch) not in used_a and not any(c_ is ch for c_, _ in A)
-            and media_info(ch[0])[0] >= MOTION_DUR + 4]
-    free = [ch for ch in dchains if id(ch) not in used_d]
+            and media_info(ch[0])[0] >= MOTION_DUR + 4 and not skip_now(ch[0])]
+    free = [ch for ch in dchains if id(ch) not in used_d and not skip_now(ch[0])]
     if deaf and free and not stop_requested():
         log(f"No prop sound in {len(deaf)} HD recording(s): lining them up with the free DVRs by motion")
         cand = []
@@ -2675,6 +2834,64 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
             pairs.append({"dvr": dch, "t_arm": t_d, "action": ch, "t_prop": t_h, "score": round(sc, 2),
                           "how": "motion only", "aligned": True})
 
+    # the goggles' mic (DVR audio kept): the HD recording a DVR's sound lines up with. A DVR nothing
+    # matched gets that HD recording; one paired by motion only (not the clocks) moves to it when the
+    # mic is clearly sure and that recording is still free. The sync itself still comes from ARMED and
+    # the prop start where the sound says they are, or from the sound when there's no ARMED there.
+    if DVR_MIC and not stop_requested():
+        mic_d = [ch for ch in dchains if ch[0] in DVR_MIC and not is_skipped(ch[0])]
+        if mic_d:
+            paired = {id(p["dvr"]): p for p in pairs}
+            used_a = {id(p["action"]) for p in pairs}
+            free_a = [ach for ach in achains if not is_skipped(ach[0])]
+            Hs = {id(ach): sound_print(ach[0], STICK_HD_LISTEN) for ach in free_a}
+            for k_, dch in enumerate(mic_d):
+                p = paired.get(id(dch))
+                if (p and p["how"].startswith("clock")) or stop_requested():
+                    continue                        # the clocks are trusted
+                progress(0.99, f"Goggles mic {os.path.basename(dch[0])}: listening", None)
+                ev(dch[0], "mic", "run", "mic sound")
+                S_ = sound_print(dch[0], STICK_LISTEN)
+                sc_ = []
+                for ach in free_a:
+                    r = sound_offset(Hs[id(ach)], S_)
+                    if r and r[1] >= STICK_MIN_Z and r[2] >= STICK_MIN_RATIO:
+                        sc_.append((r[1] * min(r[2], 3.0), ach, r))
+                if not sc_:
+                    ev(dch[0], "mic", "bad", "mic sound")
+                    continue
+                _, ach, (lag, z, ratio) = max(sc_, key=lambda x: x[0])
+                if p and p["action"] is ach:
+                    ev(dch[0], "mic", "ok", "mic sound agrees")
+                    continue
+                if (p and not (z >= MIC_OVERRIDE_Z and ratio >= MIC_OVERRIDE_RATIO)) or id(ach) in used_a:
+                    ev(dch[0], "mic", "bad", "mic sound unsure")
+                    continue
+                best = None                         # ARMED + prop start where the sound puts them
+                for c_, t_p in A:
+                    if c_ is not ach:
+                        continue
+                    expect = t_p + lag              # DVR time = HD time + lag
+                    near = armed_runs_in(dch[0], [(expect - 3, expect + 3)]) if 0 < expect < media_info(dch[0])[0] else []
+                    for r_ in near:
+                        d_ = abs(r_[0] - expect)
+                        if d_ <= 2.0 and (best is None or d_ < best[0]):
+                            best = (d_, r_[0], t_p)
+                if best:
+                    newp = {"dvr": dch, "t_arm": best[1], "action": ach, "t_prop": best[2], "score": round(z, 1),
+                            "how": "mic sound"}
+                else:                               # no ARMED there: the sound lines them up
+                    newp = {"dvr": dch, "t_arm": lag, "action": ach, "t_prop": 0.0, "score": round(z, 1),
+                            "how": "mic sound only", "aligned": True}
+                if p:
+                    pairs.remove(p)
+                    used_a.discard(id(p["action"]))
+                    log(f"{os.path.basename(dch[0])}: the goggles mic says {os.path.basename(ach[0])}, "
+                        f"not {os.path.basename(p['action'][0])} (z {z:.0f})")
+                pairs.append(newp)
+                used_a.add(id(ach))
+    pairs = [p for p in pairs if not is_skipped(p["dvr"][0]) and not is_skipped(p["action"][0])]
+
     # flying order: the HD footage leads; unmatched recordings slot in on the same timeline
     T, _ = chrono_keys(dchains, achains, [(p["dvr"], p["t_arm"], p["action"], p["t_prop"]) for p in pairs])
     when = lambda c: T.get(id(c), float("inf"))
@@ -2690,7 +2907,10 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
         ev(p["dvr"][0], done="matched")
         ev(p["action"][0], "match", "ok", f"← {os.path.basename(p['dvr'][0])}", done="matched")
     for c in [c for c in dchains if id(c) not in md] + [c for c in achains if id(c) not in ma]:
-        if c[0] not in UNREAD:
+        if is_skipped(c[0]):
+            SKIPPED_SEEN.add(c[0])
+            ev(c[0], done="skipped")
+        elif c[0] not in UNREAD:
             ev(c[0], "match", "bad", "no match", done="nomatch")
     return (pairs, sorted([c for c in dchains if id(c) not in md], key=when),
             sorted([c for c in achains if id(c) not in ma], key=when))
@@ -2707,6 +2927,8 @@ STICK_HD_LISTEN = 45.0       # s of each HD recording compared: its start, the p
                              # flight noise: 45 s scored better than 75 s on the Julian trip)
 STICK_LISTEN = 60.0          # s of each stickcam recording compared (claps are before takeoff; reading a
                              # whole clip means reading the whole file: 6.5 GB = +340 s on the Julian trip)
+MIC_OVERRIDE_Z = 12.0        # the goggles' mic overrides a motion-only pair only when this sure...
+MIC_OVERRIDE_RATIO = 2.0     # ... and its best HD recording beats the next best by this much
 STICK_MIN_Z = 8.0          # the best offset must stand out this far (z) from all the others...
 STICK_MIN_RATIO = 1.25       # ... and beat the next best offset (more than 1 s away) by this factor
 SND_SR, SND_HOP = 16000, 160  # sound print: 10 ms steps
@@ -2802,6 +3024,10 @@ def match_stickcams(stick_chains, hd_chains, log=print):
                 UNREAD.add(sc_[0])
                 ev(sc_[0], "arm", "bad", "not analysed", done="unread")
             break
+        if is_skipped(sc[0]):
+            SKIPPED_SEEN.add(sc[0])
+            ev(sc[0], done="skipped")
+            continue
         progress(0.95 + 0.04 * i / len(stick_chains), f"Stickcam {os.path.basename(sc[0])}: listening")
         ev(sc[0], "arm", "run", "listening")
         for dur in (STICK_LISTEN, None):         # its start; all of it only if the start matched nothing
@@ -2823,7 +3049,7 @@ def match_stickcams(stick_chains, hd_chains, log=print):
         pairs.append({"stick": stick_chains[i], "action": hd_chains[j], "lag": lag, "z": z, "ratio": ratio})
         ev(stick_chains[i][0], "arm", "ok", f"sound → {os.path.basename(hd_chains[j][0])}", done="matched")
     for i, sc in enumerate(stick_chains):
-        if i not in used_s and sc[0] not in UNREAD:
+        if i not in used_s and sc[0] not in UNREAD and sc[0] not in SKIPPED_SEEN:
             ev(sc[0], "arm", "bad", "no sound match", done="nomatch")
     log(f"Stickcam: {len(pairs)} of {len(stick_chains)} lined up by sound")
     return pairs, [ch for i, ch in enumerate(stick_chains) if i not in used_s]
@@ -2835,10 +3061,25 @@ def plan_layout(fps, dvr_paths, act_paths, other_paths, gap_s=30.0, lead=1, log=
     'after_previous' marks a split file that goes right after the previous clip on its track."""
     fd = 1 / fps
     T = {}
-    pairs, lone_d, lone_a = match_flights(dvr_paths, act_paths, log, order=T)
-    hd_chains = list({id(c): c for c in [p["action"] for p in pairs] + list(lone_a)}.values())
-    sticks, lone_s = match_stickcams(chain_files(list(stick_paths), 3), hd_chains, log) if stick_paths else ([], [])
+    for _round in range(4):
+        pairs, lone_d, lone_a = match_flights(dvr_paths, act_paths, log, order=T)
+        hd_chains = [c for c in {id(c): c for c in [p["action"] for p in pairs] + list(lone_a)}.values()
+                     if not skip_now(c[0])]          # a skipped HD clip gets no stickcam either
+        sticks, lone_s = match_stickcams(chain_files(list(stick_paths), 3), hd_chains, log) if stick_paths else ([], [])
+        back = [x for x in SKIPPED_SEEN if not is_skipped(x)]       # un-skipped while it ran: again, with them
+        if not back or stop_requested():
+            break
+        log(f"Processing again: {', '.join(os.path.basename(x) for x in back)}")
+        SKIPPED_SEEN.difference_update(back)
+        T = {}
     stick_of = {id(sp["action"]): sp for sp in sticks}
+    with_dvr = {id(p["action"]) for p in pairs}
+    for sp in sticks:                            # the HD clip's row: its stickcam is a match too
+        hd, st_name = sp["action"][0], os.path.basename(sp["stick"][0])
+        if id(sp["action"]) in with_dvr:
+            ev(hd, "stick", "ok", f"← {st_name}")
+        else:                                    # no DVR, but a stickcam: not "no match" any more
+            ev(hd, "match", "ok", f"← {st_name}", done="matched")
     nframes = lambda p: int(math.ceil(media_info(p)[0] * fps))
     chain_len = lambda ch: sum(nframes(p) for p in ch)
     gap = int(round(gap_s * fps))
@@ -2871,7 +3112,7 @@ def plan_layout(fps, dvr_paths, act_paths, other_paths, gap_s=30.0, lead=1, log=
         put(chain, track, cursor)
         report.append({"dvr" if kind == "DVR" else "action": os.path.basename(chain[0]), "path": chain[0],
                        "how": "no match", "kind": kind, "start": cursor,
-                       "unread": chain[0] in UNREAD})
+                       "unread": chain[0] in UNREAD, "skipped": is_skipped(chain[0])})
         cursor += chain_len(chain) + gap
 
     for _, lone_block, g in blocks:
@@ -2911,7 +3152,7 @@ def plan_layout(fps, dvr_paths, act_paths, other_paths, gap_s=30.0, lead=1, log=
     for ch in lone_s:                            # stickcam clips no HD recording's sound matched
         put(ch, 1, cursor)
         report.append({"stick": os.path.basename(ch[0]), "stick_path": ch[0], "kind": "stick", "how": "no match",
-                       "start": cursor})
+                       "start": cursor, "skipped": is_skipped(ch[0])})
         cursor += chain_len(ch) + gap
     for p in sorted(other_paths, key=os.path.basename):
         put_lone([p], 1, "other")
@@ -2930,6 +3171,13 @@ def process_job(job_path, out_path):
     global TIMING, STOP_FILE
     job = json.load(open(job_path, encoding="utf-8"))
     STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(job_path)), "stop")
+    global SKIP_FILE
+    SKIP_FILE = os.path.join(os.path.dirname(os.path.abspath(job_path)), "skip.json")
+    SKIPPED_SEEN.clear()
+    DVR_MIC.clear()
+    DVR_MIC.update(job.get("dvr_audio") or [])
+    if job.get("paths"):                             # still images are never part of a run
+        job["paths"] = [p_ for p_ in job["paths"] if not p_.lower().endswith(IMAGE_EXT)]
     UNREAD.clear()
     try:
         ensure_ffmpeg()
@@ -3007,6 +3255,9 @@ def process_job(job_path, out_path):
     except Exception as e:
         import traceback
         res = {"error": str(e), "trace": traceback.format_exc(), "log": lines}
+    for p_ in sorted(SKIPPED_SEEN):              # the panel's last word: these were left out of this run,
+        if EVENT:                                # even if un-skipped too late to be processed again
+            EVENT("ev", {"p": p_, "c": None, "s": None, "t": "", "d": "skipped", "final": True})
     json.dump(res, open(out_path, "w", encoding="utf-8"), indent=1)
     try:
         rec = {"when": time.strftime("%Y-%m-%d %H:%M:%S"), "mode": job.get("mode", "sync"),

@@ -123,6 +123,23 @@
   .grp { font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:8px 0 3px; }
   .row { padding:4px 5px; border-radius:3px; border-bottom:1px solid var(--line); }
   .row.cur { background:#1f2c3d; }
+  .row { position:relative; cursor:pointer; }
+  .row:hover { background:#232a33; }
+  .row.cur:hover { background:#22324a; }
+  .row.picked { outline:1.5px solid #6aa9ff; outline-offset:-1px; background:#1d2a3a; }
+  .row .acts { position:absolute; top:3px; right:3px; display:flex; gap:3px; }
+  .row .ib { width:20px; height:18px; display:inline-flex; align-items:center; justify-content:center; border-radius:3px;
+             color:#8fa7c2; border:1px solid transparent; }
+  .row .ib:hover { border-color:#3c3c3c; background:#2a2a2a; }
+  .row .ib svg { width:11px; height:11px; }
+  .row .ib.skip { color:#9a8080; }
+  .row .ib.undo { color:#f0c070; border-color:#6b5a2a; background:#2a2518; }
+  .row .n { padding-right:46px; }
+  .row.skipped .n, .row.skipped .chips, .row.skipped .ib.show { opacity:.3; }
+  button.snd { width:auto; height:22px; flex:0 0 auto; padding:0 8px; gap:5px; font-size:10.5px; margin-right:6px;
+               border:1px solid #3c3c3c; background:#2a2a2a; color:#dfe7f0; }
+  button.snd svg { width:12px; height:12px; flex:0 0 12px; color:inherit; }
+  button.snd.off { color:#8a8a8a; }
   .row .n { color:var(--bright); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-bottom:2px; }
   .chips { display:flex; flex-wrap:wrap; gap:3px; }
   .chip { font-size:10px; padding:0 5px; border-radius:8px; line-height:16px; border:1px solid #3a3a3a; color:#8a8a8a; white-space:nowrap; }

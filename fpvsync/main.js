@@ -80,6 +80,7 @@ function runPython(job, onLine) {
         const cancelled = active && active.child === child && active.stop === 2;
         active = null;
         showStop(false);
+        drawLive();                         // skip / undo only while the analysis runs
         if (cancelled) return reject(new Error('Cancelled: nothing in the sequence was changed.'));
       }
       if (fs.existsSync(outFile)) return resolve(JSON.parse(fs.readFileSync(outFile, 'utf8')));
@@ -105,7 +106,7 @@ const TONE = { move: 'ok', moved: 'ok', 'in sync': 'ok', placed: 'ok', matched: 
 function render(rows) {
   const tone = { ok: 'ok', warn: 'warn', bad: 'bad' };
   rows.forEach((r) => {
-    if (!r.path) return;
+    if (!r.path || r.why === 'skipped by you') return;       // its row already shows it's skipped
     const t = TONE[r.status] || 'warn';
     const move = r.move_frames !== undefined && r.status === 'moved'
       ? ` ${r.move_frames > 0 ? '+' : ''}${r.move_frames} fr` : '';
@@ -143,9 +144,10 @@ function bar(frac, label) {
 
 // ---- live file list + counters, fed by the analysis ("@@files [...]", "@@ev {...}")
 const ROLE_NAME = { dvr: 'DVR', hd: 'HD', stick: 'Stickcam' };
-const live = { files: [], byPath: {}, cur: null, synced: 0, mode: 'build' };
+const live = { files: [], byPath: {}, cur: null, synced: 0, mode: 'build', skip: new Set(), sel: null };
 function resetLive() {
-  Object.assign(live, { files: [], byPath: {}, cur: null, synced: 0, mode: typeof action === 'string' ? action : 'build' });
+  Object.assign(live, { files: [], byPath: {}, cur: null, synced: 0, mode: typeof action === 'string' ? action : 'build',
+                        skip: new Set(), sel: null, selWas: null });
   $('tiles').innerHTML = ''; $('files').innerHTML = ''; $('livebox').hidden = true;
 }
 function setFiles(list) {
@@ -164,6 +166,16 @@ function onEvent(e) {
     if (e.s === 'run') { live.cur = f.p; bar(undefined, `${esc(e.t)} · <b>${esc(base(f.p))}</b>`); }
   }
   if (e.d) f.done = e.d;
+  if (e.d === 'skipped') {                                  // its step stopped there: nothing runs on it now
+    f.chips = f.chips.filter((c) => c.s !== 'run');
+    if (live.cur === f.p) live.cur = null;
+    if (e.final) live.skip.add(f.p);                        // the run is over and it was left out
+    else if (!live.skip.has(f.p)) { f.done = null; f.chips = []; }  // un-skipped meanwhile: waits to be processed again
+  }
+  if (e.d === 'part' && /^continues /.test(e.t || '')) f.head = e.t.slice(10);
+  if (e.d && e.d !== 'skipped' && e.c === null && !live.skip.has(f.p)) {
+    f.chips = f.chips.filter((c) => c.s !== 'run');          // processed again after an un-skip
+  }
   drawLive();
 }
 let drawPending = false;
@@ -190,14 +202,81 @@ function drawLiveNow() {
     `${esc(short(c.t))}</span>`;
   // one column per kind of footage (side by side when the panel is wide enough), headed by its
   // "arming detected" count; the file being worked on is highlighted where it is (no scrolling)
+  // each row: click it to jump to the clip in the timeline; the target icon does the same; the skip
+  // icon (any file, any time while it runs) leaves it out, and turns into undo to process it again
+  const icons = (f, sk) => `<div class="acts"><span class="ib show" title="Show in the timeline">${ICON_TARGET}</span>` +
+    (prog.running && active && !corner ? (sk ? `<span class="ib undo" title="Skipped: click to process it again">${ICON_UNDO}</span>`
+                                    : `<span class="ib skip" title="Skip this clip">${ICON_SKIP}</span>`) : '') + `</div>`;
   $('files').innerHTML = `<div class="cols">` + roles.map((r) => `<div class="col">` +
     (corner ? `<div class="grp"><span class="sw ${r}"></span>${ROLE_NAME[r]}</div>`
-      : tile(armed(r), of(r).length, `${ROLE_NAME[r]} · arming detected`, '', r)) + of(r).map((f) =>
-    `<div class="row${f.p === live.cur && !f.done ? ' cur' : ''}"><div class="n" title="${esc(f.p)}">` +
-    `${esc(base(f.p).replace(/\.(mp4|mov)(\.mp4)?$/i, ''))}</div><div class="chips">` +
-    (f.chips.length ? f.chips.map(chip).join('') : '<span class="chip">waiting</span>') + `</div></div>`).join('') +
-    `</div>`).join('') + `</div>`;
+      : tile(armed(r), of(r).length, `${ROLE_NAME[r]} · arming detected`, '', r)) + of(r).map((f) => {
+      const sk = live.skip.has(f.p) || (f.done === 'skipped' && !prog.running);
+      // skipped: a step still shown as running says "skipped" instead (it stops on the click)
+      const real = f.chips.filter((c) => c.c !== 'final' || !sk)
+        .map((c) => (sk && c.s === 'run' ? { c: c.c, s: '', t: 'skipped' } : c));
+      return `<div class="row${f.p === live.cur && !f.done && !sk ? ' cur' : ''}${sk ? ' skipped' : ''}` +
+        `${f.p === live.sel ? ' picked' : ''}" data-p="${esc(f.p)}">` +
+        `<div class="n" title="${esc(f.p)}">${esc(base(f.p).replace(/\.(mp4|mov)(\.mp4)?$/i, ''))}</div><div class="chips">` +
+        (real.length ? real.map(chip).join('')
+                     : `<span class="chip">${sk || f.done === 'skipped' ? 'skipped' : 'waiting'}</span>`) +
+        `</div>${icons(f, sk)}</div>`;
+    }).join('') + `</div>`).join('') + `</div>`;
 }
+// the other way round: one clip selected in the timeline -> its row is outlined and scrolled to
+// (only when the selection changes; selecting several clips does nothing)
+let selBusy = false;
+function rowFor(p) {
+  const f = live.byPath[p];
+  if (!f) return null;
+  if (f.done !== 'part') return f.p;
+  const head = live.files.find((x) => base(x.p) === f.head);       // a split file: its first file's row
+  return head ? head.p : null;
+}
+async function followSelection() {
+  if (document.hidden || !live.files.length || selBusy) return;
+  selBusy = true;                                     // one question to Premiere at a time
+  let p;
+  try { p = String(await evalES('fpv_selOne()', true)); } finally { selBusy = false; }
+  if (p === live.selWas) return;                      // (a new run resets it: what's selected shows again)
+  live.selWas = p;
+  const r = p ? rowFor(p) : null;
+  if (r === live.sel) return;
+  live.sel = r;
+  drawLiveNow();
+  const el = r && [...$('files').querySelectorAll('.row')].find((x) => x.dataset.p === r);
+  if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+setInterval(followSelection, 1000);
+const ICON_TARGET = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="7"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>';
+const ICON_SKIP = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 5l9 7-9 7zM16 5h3v14h-3z"/></svg>';
+const ICON_SPK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg>';
+const ICON_MUTE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 9l5 6M22 9l-5 6"/></svg>';
+const ICON_UNDO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>';
+// the analysis reads skip.json (in its job folder) whenever it changes
+function writeSkip() {
+  if (!active) return;
+  try { fs.writeFileSync(path.join(active.dir, 'skip.json'), JSON.stringify([...live.skip])); } catch (e) {}
+}
+async function showInTimeline(p) {
+  const out = String(await evalES(`fpv_show(${JSON.stringify(p)})`));
+  if (out === 'missing') status(`${base(p)} isn't in the sequence right now.`, 'blocked');
+}
+$('files').addEventListener('click', (e) => {
+  const row = e.target.closest('.row');
+  if (!row) return;
+  const p = row.dataset.p;
+  if (e.target.closest('.ib.skip, .ib.undo')) {
+    if (live.skip.has(p)) {
+      live.skip.delete(p);
+      const f = live.byPath[p];
+      if (f && f.done === 'skipped') { f.done = null; f.chips = []; }    // back to waiting: processed again later
+    } else live.skip.add(p);
+    writeSkip();
+    drawLiveNow();
+    return;
+  }
+  showInTimeline(p);
+});
 // the run's last word on a file, as one more chip (what the old results list said)
 function finalChip(p, s, t, key = 'final') {
   const f = live.byPath[p];
@@ -270,6 +349,10 @@ const cams = { groups: [], ctx: null, sig: null, busy: false, again: false, star
 function rolesNow() {                       // { camera key: role } as the list shows it
   return Object.fromEntries(cams.groups.map((g) => [g.key, cams.chosen[g.key] || g.role || '']));
 }
+function micPaths() {                       // the DVR files whose audio you keep (goggles with a mic)
+  const roles = rolesNow();
+  return cams.groups.filter((g) => roles[g.key] === 'dvr' && audioKept(g.key)).flatMap((g) => g.paths || []);
+}
 function roleOfPath() {                     // { file: role } for the files in the selection
   const roles = rolesNow(), out = {};
   cams.groups.forEach((g) => (g.paths || []).forEach((p) => { out[p] = roles[g.key]; }));
@@ -299,6 +382,10 @@ function drawPicker() {
       return `<div class="cam"><span class="nm"><b>${esc(g.name)}</b>
       <span class="sub">${g.clips} clip${g.clips === 1 ? '' : 's'} · ${esc(g.formats.join(', '))}</span>
       <span class="why">${esc(g.folders.join(', '))}${g.known ? '' : ' · <i>new camera</i>'}</span></span>
+      ${role === 'dvr' ? `<button class="snd${audioKept(g.key) ? '' : ' off'}" data-k="${k}"${prog.running ? ' disabled' : ''}
+        title="${audioKept(g.key) ? 'Click to remove the DVR audio (goggles without a mic record silence)'
+                                    : 'Click to keep the DVR audio (goggles with a mic)'}">` +
+        `${audioKept(g.key) ? ICON_SPK + 'Audio kept' : ICON_MUTE + 'Audio removed'}</button>` : ''}
       <select class="role ${role || 'none'}" data-k="${k}"${prog.running ? ' disabled' : ''}>` +
       (role ? '' : '<option value="" selected disabled>Choose…</option>') +
       ROLE_OPTS.map(([v, t]) => `<option value="${v}"${v === role ? ' selected' : ''}>${t}</option>`).join('') +
@@ -307,17 +394,25 @@ function drawPicker() {
     $('camlist').querySelectorAll('select').forEach((s) => s.addEventListener('change', () => {
       s.className = 'role ' + s.value;
       cams.chosen[cams.groups[Number(s.dataset.k)].key] = s.value;
-      readyCheck();
-      drawPip();
+      drawPicker();                            // the Audio button follows the DVR role
+    }));
+    $('camlist').querySelectorAll('button.snd').forEach((b) => b.addEventListener('click', () => {
+      const key = cams.groups[Number(b.dataset.k)].key;
+      pipSet.audio[key] = !audioKept(key);
+      savePip();
+      drawPicker();
     }));
   }
   readyCheck();
   if (typeof drawPip === 'function') drawPip();
 }
+// still images (logos, title cards): never part of a run, and left where they are in the timeline
+const IMAGE_RE = '\\.(png|jpe?g|tiff?|psd|bmp|gif|webp|exr|dpx)$';
+const isImage = (p) => new RegExp(IMAGE_RE, 'i').test(p || '');
 // the files whose cameras matter for the picked action: the selection (Sync: and the clips it overlaps)
 async function collect() {
   const seq = await readSequence(true);
-  const video = seq.clips.filter((c) => c.kind === 'video' && c.path);
+  const video = seq.clips.filter((c) => c.kind === 'video' && c.path && !isImage(c.path));
   const sel = video.filter((c) => c.selected);
   const files = action === 'sync'
     ? video.filter((c) => sel.some((s) => Math.min(s.end, c.end) > Math.max(s.start, c.start)))
@@ -360,11 +455,13 @@ const ANCHORS = { tl: [0, 0], tc: [0.5, 0], tr: [1, 0], ml: [0, 0.5], c: [0.5, 0
                   bl: [0, 1], bc: [0.5, 1], br: [1, 1] };
 const ANCHOR_NAME = { tl: 'Top-left', tc: 'Top-centre', tr: 'Top-right', ml: 'Middle-left', c: 'Centre',
                       mr: 'Middle-right', bl: 'Bottom-left', bc: 'Bottom-centre', br: 'Bottom-right' };
-const pipSet = { on: { build: true, sync: true }, dvr: { at: 'br', width: null }, stick: { at: 'bl', width: null } };
+const pipSet = { on: { build: true, sync: true }, dvr: { at: 'br', width: null }, stick: { at: 'bl', width: null },
+                 audio: {} };                // audio: { DVR camera key: false } where its audio is removed
 try {
   const saved = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')).pip || {};
-  ['on', 'dvr', 'stick'].forEach((k) => Object.assign(pipSet[k], saved[k] || {}));
+  ['on', 'dvr', 'stick', 'audio'].forEach((k) => Object.assign(pipSet[k], saved[k] || {}));
 } catch (e) {}
+const audioKept = (key) => pipSet.audio[key] !== false;          // kept unless you removed it
 function savePip() { try { fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ pip: pipSet }, null, 1)); } catch (e) {} }
 const pipCfg = () => Object.assign({ scale: 76, crop_top: 0.6, crop_right: 0, dvr_size_fallback: [1280, 960] }, cfg.pip || {});
 function srcSize(kind) {                     // pixel size of the selection's camera with that role
@@ -494,7 +591,8 @@ async function runSync(roles, ctx) {
   stage(0, 0.85);
   bar(0, 'Analysing the selected flights');
   const res = await runPython({ fps, clips: seq.clips, dvr: cfg.dvr, action: cfg.action, roles,
-    lead: cfg.lead, prior_window: cfg.prior_window, only_selected: true, osd_search: cfg.osd_search || 'auto' },
+    lead: cfg.lead, prior_window: cfg.prior_window, only_selected: true, osd_search: cfg.osd_search || 'auto',
+    dvr_audio: micPaths() },
     onPython);
   if (res.error) {
     $('log').textContent = (res.log || []).join('\n') + (res.trace ? '\n' + res.trace : '');
@@ -585,7 +683,7 @@ async function runBuild(roles, ctx) {
   const tpf = seq.tpf;
   stage(0, 0.8);
   bar(0, `Analysing ${paths.length} clips`);
-  const res = await runPython({ mode: 'build', fps, paths, dvr: cfg.dvr, action: cfg.action, roles,
+  const res = await runPython({ mode: 'build', fps, paths, dvr: cfg.dvr, action: cfg.action, roles, dvr_audio: micPaths(),
     lead: cfg.lead, gap: cfg.gap || 30, osd_search: cfg.osd_search || 'auto' }, onPython);
   if (res.error) {
     $('log').textContent = (res.log || []).join('\n') + (res.trace ? '\n' + res.trace : '');
@@ -599,7 +697,15 @@ async function runBuild(roles, ctx) {
   stage(0.8, 0.95);
   bar(0, 'Taking the selected clips out');
   const span = Math.max(...res.placements.map((p) => p.est_start + p.length));
-  const tk = String(await evalES('fpv_takeSelected()'));
+  // the clips selected when Start was pressed (still images and clips without a file stay put)
+  const picked = seq.clips.filter((c) => c.kind === 'video' && c.selected && c.path && !isImage(c.path)).map((c) => c.id);
+  const tk = String(await evalES(`fpv_takeClips(${JSON.stringify(JSON.stringify(picked))})`));
+  if (tk.startsWith('missing: ')) {
+    const gone = new Set(tk.slice(9).split(','));
+    const names = [...new Set(seq.clips.filter((c) => gone.has(c.id)).map((c) => base(c.path)))];
+    throw new Error(`${names.join(', ')} left the sequence during the run, so nothing was changed. ` +
+      'Start again: it goes much faster the second time.');
+  }
   if (!tk.startsWith('ok')) throw new Error(tk);
   let base0 = Math.round(Number(tk.slice(4)) / tpf);
   let note = '';
@@ -639,7 +745,8 @@ async function runBuild(roles, ctx) {
   const from = base0 * tpf, to = (base0 + span + 1) * tpf;
   bar(1, 'Removing the DVR sound');
   const dvrFiles = new Set(live.files.filter((f) => f.r === 'dvr').map((f) => f.p));
-  const dvrNames = [...new Set([...dvrFiles].map(base))];
+  const keep = new Set(micPaths());
+  const dvrNames = [...new Set([...dvrFiles].filter((p_) => !keep.has(p_)).map(base))];
   if (dvrNames.length) await evalES(`fpv_dropAudio(${JSON.stringify('^(' + dvrNames.map(reEsc).join('|') + ')$')}, ${from}, ${to})`);
   stage(0.95, 1);
   // PiP layout (when ticked) on the clips just placed: every DVR, and the stickcam clips that were lined up
@@ -667,10 +774,12 @@ async function runBuild(roles, ctx) {
   const sticks = res.report.filter((r) => r.how !== 'no match' && r.stick);
   const pl = (k, w) => `${k} ${w}${k === 1 ? '' : 's'}`;
   const unread = res.report.filter((r) => r.unread).length;
-  const lone = res.report.filter((r) => r.how === 'no match').length - unread;
+  const skipped = res.report.filter((r) => r.skipped).length;
+  const lone = res.report.filter((r) => r.how === 'no match').length - unread - skipped;
   status((res.stopped ? 'Stopped early: ' : '') + `${pl(flights.length, 'flight')} matched and synced` +
     (sticks.length ? `, ${pl(sticks.length, 'stickcam clip')} lined up` : '') +
     (lone ? `, ${pl(lone, 'clip')} without a match left in recording order` : '') +
+    (skipped ? `, ${pl(skipped, 'clip')} skipped (left in recording order)` : '') +
     (unread ? `, ${pl(unread, 'clip')} not analysed (placed in recording order)` : '') + '.' + note, 'moved');
 }
 

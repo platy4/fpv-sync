@@ -204,34 +204,35 @@ function fpv_move(idList, frames) {
 // ------------------------------------------------------- Match & sync selected
 var fpvItemsByPath = {};
 
-// Take the selected clips (and whatever is linked to them, e.g. their sound) out of the sequence,
-// remembering each file's project item so it can be placed again. Returns 'ok: <first start ticks>'.
-function fpv_takeSelected() {
+// Take these clips (ids: the video clips that were selected when the run started, so clicking around in
+// the timeline meanwhile changes nothing) and whatever is linked to them (their sound) out of the
+// sequence, remembering each file's project item so it can be placed again. Returns 'ok: <first start ticks>'.
+function fpv_takeClips(idsJson) {
     var seq = app.project.activeSequence;
     if (!seq) return 'error: open the sequence first';
     fpvItemsByPath = {};
+    var want = {}, list = eval('(' + idsJson + ')');
+    for (var i = 0; i < list.length; i++) want[list[i]] = true;
     var ids = {}, first = null, n = 0;
     fpv_each(seq, function (kind, t, it) {
-        var sel = false;
-        try { sel = it.isSelected(); } catch (e) {}
-        if (!sel) return;
+        if (kind !== 'video' || !want[it.nodeId]) return;
         ids[it.nodeId] = true;
         n++;
         try { if (it.projectItem) fpvItemsByPath[it.projectItem.getMediaPath()] = it.projectItem; } catch (e) {}
-        if (kind === 'video') {
-            var st = Number(it.start.ticks);
-            if (first === null || st < first) first = st;
-        }
+        var st = Number(it.start.ticks);
+        if (first === null || st < first) first = st;
         try {
             var li = it.getLinkedItems();
             if (li) for (var k = 0; k < li.numItems; k++) ids[li[k].nodeId] = true;
         } catch (e) {}
     });
-    if (!n || first === null) return 'error: nothing selected';
-    for (var id in ids) {
-        var it = fpv_find(seq, id);
-        if (it) it.remove(false, false);
-    }
+    var missing = [];                       // deleted meanwhile: change nothing (half a layout is worse)
+    for (var id0 in want) if (!ids[id0]) missing.push(id0);
+    if (missing.length) { fpvItemsByPath = {}; return 'missing: ' + missing.join(','); }
+    if (!n || first === null) return 'error: nothing was selected when the run started';
+    var gone = [];
+    fpv_each(seq, function (kind, t, it) { if (ids[it.nodeId]) gone.push(it); });
+    for (var g = 0; g < gone.length; g++) gone[g].remove(false, false);
     return 'ok: ' + first;
 }
 
@@ -304,6 +305,55 @@ function fpv_put(path, track, ticks) {
         if (Math.abs(Number(tr.clips[c].start.ticks) - ticks) < 1000) end = Number(tr.clips[c].end.ticks);
     }
     return 'ok: ' + end;
+}
+
+// The file of the one video clip selected in the timeline ('' when none or several): the panel
+// highlights that file's row. Its linked audio doesn't count as a second clip.
+function fpv_selOne() {
+    var seq = app.project.activeSequence;
+    if (!seq) return '';
+    var paths = [];
+    var sel = null;
+    try { sel = seq.getSelection(); } catch (e) {}
+    if (sel) {                              // the selection only: cheap even in a big sequence
+        for (var i = 0; i < sel.length; i++) {
+            var it_ = sel[i], isVid = false;
+            try { isVid = it_.mediaType === 'Video'; } catch (e) {}
+            if (!isVid) continue;
+            var p_ = '';
+            try { p_ = it_.projectItem ? it_.projectItem.getMediaPath() : ''; } catch (e) {}
+            paths.push(p_);
+            if (paths.length > 1) return '';
+        }
+        return paths.length === 1 ? paths[0] : '';
+    }
+    fpv_each(seq, function (kind, t, it) {
+        if (kind !== 'video') return;
+        var sel = false;
+        try { sel = it.isSelected(); } catch (e) {}
+        if (!sel) return;
+        var p = '';
+        try { p = it.projectItem ? it.projectItem.getMediaPath() : ''; } catch (e) {}
+        paths.push(p);
+        if (paths.length > 1) return false;
+    });
+    return paths.length === 1 ? paths[0] : '';
+}
+
+// Move the playhead to the first clip of this file in the sequence (the panel's file list links to it).
+function fpv_show(path) {
+    var seq = app.project.activeSequence;
+    if (!seq) return 'error: no sequence open';
+    var best = null;
+    fpv_each(seq, function (kind, t, it) {
+        if (kind !== 'video') return;
+        var p = '';
+        try { p = it.projectItem ? it.projectItem.getMediaPath() : ''; } catch (e) {}
+        if (p === path && (best === null || Number(it.start.ticks) < Number(best.start.ticks))) best = it;
+    });
+    if (!best) return 'missing';
+    seq.setPlayerPosition(String(best.start.ticks));
+    return 'ok: ' + best.start.ticks;
 }
 
 // Make sure the sequence has at least n video tracks (the stickcam goes above the DVR). The QE DOM's
