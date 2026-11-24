@@ -19,17 +19,19 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(HERE, "armed_template.npy")            # ARMED as an NTSC camera draws it
 TEMPLATE_PAL = os.path.join(HERE, "armed_template_pal.npy")    # ... and a PAL one (shorter letters)
+DISARMED_S = os.path.join(HERE, "disarmed_s.npy")    # the "S" of DISARMED, the letter right before its "ARMED"
 CACHE = os.path.join(HERE, "detect_cache.json")
 PROPS = "props4"                 # cache key; bump when the prop detector changes
-ARMED = "armed5"                 # cache key; bump when the ARMED detector changes (5: every 6th frame + glitch-tolerant confirm)
+ARMED = "armed6"                 # cache key; bump when the ARMED detector changes (6: DISARMED is not ARMED, box 48 px wider left)
 TICKS = 254016000000            # Premiere ticks per second
 
 # ARMED template: where it was cut from a 1280x960 DVR frame (full-res px)
 TX, TY, TW, TH = 555, 432, 220, 64
 # search box: ARMED has shown up in two places in the DVR picture so far (~(555,432) on the
 # Nov 2026 trips, ~(512,503) on the Aug 2026 one). "auto" covers both, and falls back to the
-# whole middle of the frame ("wide") for a DVR where it finds no ARMED at all.
-OSD_BOXES = {"auto": (488, 408, 312, 184), "wide": (360, 300, 560, 360)}
+# whole middle of the frame ("wide") for a DVR where it finds no ARMED at all. The box reaches one
+# letter left of ARMED, so DISARMED (same spot, "DIS" in front) can be told apart.
+OSD_BOXES = {"auto": (440, 408, 360, 184), "wide": (360, 300, 560, 360)}
 OSD_BOXES["narrow"] = OSD_BOXES["auto"]          # older configs said "narrow"
 OSD_MODE = "auto"
 SX, SY, SW, SH = OSD_BOXES["auto"]
@@ -40,6 +42,7 @@ def set_osd_search(mode):
     OSD_MODE = mode if mode in OSD_BOXES else "auto"
     SX, SY, SW, SH = OSD_BOXES[OSD_MODE]
 ARM_THRESHOLD = 0.55            # NCC score that counts as "ARMED visible"
+DISARMED_S_MIN = 0.4            # NCC of the letter before ARMED with an "S": DISARMED (it scores 0.75-0.95, ARMED <= 0.25)
 ARM_MIN_RUN = 8                 # consecutive frames needed (ARMED shows ~35)
 DVR_NAME = "orqa"               # DVR recordings: file names with "orqa" anywhere (ORQA0123.MP4, day1_orqa_12.46.mp4)
 ARMED_STEP = 6                  # coarse scan: every 6th frame; a real ARMED can be as short as 7 frames
@@ -48,6 +51,15 @@ ARMED_STEP = 6                  # coarse scan: every 6th frame; a real ARMED can
 # ----------------------------------------------------------------- utilities
 def run(cmd):
     return subprocess.run(cmd, capture_output=True, check=True).stdout
+
+
+STOP_FILE = None          # set per panel job; the panel creates it when you click Stop
+UNREAD = set()            # recordings a stopped run never got to (first file of each)
+
+
+def stop_requested():
+    """Stop clicked: finish the file in hand, read no more footage, place what's known."""
+    return bool(STOP_FILE) and os.path.exists(STOP_FILE)
 
 
 def ensure_ffmpeg():
@@ -168,9 +180,34 @@ def armed_refs():
     return _ARMED_REFS
 
 
+_S_REF = None
+
+
+def _disarmed(g, x, y, cw):
+    """Is there an "S" one letter left of the ARMED found at (x, y)? Then it's DISARMED, which the
+    OSD shows in the same place whenever the quad is disarmed (start of a recording, after landing)."""
+    global _S_REF
+    if _S_REF is None:
+        s_ = np.load(DISARMED_S) if os.path.exists(DISARMED_S) else None
+        _S_REF = False if s_ is None else (s_ - s_.mean(), float(np.sqrt(((s_ - s_.mean()) ** 2).sum())))
+    if _S_REF is False:
+        return False
+    sz, sn = _S_REF
+    h, w = sz.shape
+    y0, y1 = max(0, y - 3), min(g.shape[0], y + 3 + h)
+    x0, x1 = max(0, x - cw - 6), min(g.shape[1], x - cw + 6 + w)
+    if y1 - y0 < h or x1 - x0 < w:
+        return False                     # no room to look (ARMED at the very edge of the box)
+    win = np.lib.stride_tricks.sliding_window_view(g[y0:y1, x0:x1], (h, w))
+    pz = win - win.mean(axis=(2, 3), keepdims=True)
+    ncc = (pz * sz).sum(axis=(2, 3)) / (np.sqrt((pz * pz).sum(axis=(2, 3))) * sn + 1e-9)
+    return float(ncc.max()) >= DISARMED_S_MIN
+
+
 def armed_score(f):
-    """Best normalised cross-correlation of any ARMED reference in the search box. The frame's
-    filtering, FFT and local variance are shared by the references (padded to a fast FFT size)."""
+    """Best normalised cross-correlation of any ARMED reference in the search box (0 when it's the
+    ARMED of a DISARMED). The frame's filtering, FFT and local variance are shared by the references
+    (padded to a fast FFT size)."""
     refs = armed_refs()
     g = half(highpass(f))
     H, W = g.shape
@@ -178,7 +215,7 @@ def armed_score(f):
     Gf = np.fft.rfft2(g, s=S)
     c1 = c2 = None
     sd = {}
-    best = -1.0
+    best, at = -1.0, None
     for tz, tn in refs:
         th, tw = tz.shape
         key = (id(tz), S)
@@ -192,7 +229,12 @@ def armed_score(f):
             s1, s2 = box(c1), box(c2)
             sd[(th, tw)] = np.sqrt(np.maximum(s2 - s1 * s1 / (th * tw), 1e-6))
         num = np.fft.irfft2(Gf * _TFFT[key], s=S)[: H - th + 1, : W - tw + 1]
-        best = max(best, float((num / (sd[(th, tw)] * tn)).max()))
+        sc = num / (sd[(th, tw)] * tn)
+        k = int(sc.argmax())
+        if sc.flat[k] > best:
+            best, at = float(sc.flat[k]), (k // sc.shape[1], k % sc.shape[1], tw // 5)
+    if best >= ARM_THRESHOLD and _disarmed(g, at[1], at[0], at[2]):
+        return 0.0
     return best
 
 
@@ -374,6 +416,8 @@ def audio_envelope(path, sr=48000, block_ms=5, start=0.0, dur=None):
     a = np.frombuffer(raw, np.float32).astype(np.float64)
     if len(a) < sr // 10:                       # nothing there (window past the end of the file)
         return np.zeros(0), block_ms / 1000
+    if start <= 0:
+        keep_sound_print(path, a, sr)           # for the stickcam, at no extra read
     # motor whine band 1-6 kHz (no wind rumble, no high hiss such as cicadas), zero-phase so
     # no delay, then tilted toward the highs for a sharp onset
     A = np.fft.rfft(a)
@@ -475,6 +519,20 @@ def _onsets(env, bt, jump_db, sustain=None, burst_db=None):
 # ----------------------------------------------------------------- progress
 PROGRESS = None          # set by the panel job: called with (fraction 0..1, label)
 TIMING = None            # panel jobs record progress + per-step timings here (timing_log.jsonl)
+
+
+EVENT = None                # panel jobs: per-file step events for the live file list
+
+
+def ev(path, chip=None, state=None, text="", done=None):
+    """One step of one file for the panel: chip (step name) in state ok / bad / run, its text, and
+    when the file is finished, done = matched / nomatch / part (split-file continuation) / unread."""
+    if EVENT and path:
+        EVENT("ev", {"p": path, "c": chip, "s": state, "t": text, "d": done})
+
+
+def mmss(t):
+    return f"{int(t // 60)}:{t % 60:04.1f}"
 
 
 def progress(fraction, label, eta=None):
@@ -671,7 +729,7 @@ def sync_clips(fps, clips, dvr_re, act_re, lead=1, prior_window=30.0, only_selec
     by_id = {c["id"]: c for c in clips}
     video = [c for c in clips if c["kind"] == "video" and c.get("path")]
     base = lambda c: os.path.basename(c["path"])
-    dvr_all = sorted([c for c in video if re.search(dvr_re, base(c), re.I)],
+    dvr_all = sorted([c for c in video if is_dvr(c["path"], dvr_re)],
                      key=lambda c: (c["track"], c["start"]))
     act = [c for c in video if is_hd(c["path"], dvr_re, act_re)]
     armed = lambda c: (cached(ARMED, c["path"], lambda: detect_armed(c["path"], verbose))
@@ -708,6 +766,13 @@ def sync_clips(fps, clips, dvr_re, act_re, lead=1, prior_window=30.0, only_selec
                 groups.append([c])
     groups = [g for g in groups if picked(g)]
     log(f"{len(groups)} DVR flight(s), {len(act)} HD clip(s), {fps:.3f} fps")
+    sticks = [c for c in video if is_stick(c["path"])]
+    if only_selected:                   # a stickcam clip is picked when it, or the HD clip under it, is
+        sticks = [c for c in sticks if c.get("selected") or any(
+            a.get("selected") and min(c["end"], a["end"]) > max(c["start"], a["start"]) for a in act)]
+    if EVENT:
+        EVENT("files", [{"p": g[0]["path"], "r": "dvr", "id": g[0]["id"]} for g in groups] +
+              [{"p": c["path"], "r": "stick", "id": c["id"]} for c in sticks])
     prewarm_flights(groups, act, fd, prior_window)
 
     rows = []
@@ -734,8 +799,10 @@ def sync_clips(fps, clips, dvr_re, act_re, lead=1, prior_window=30.0, only_selec
         d = g[0]
         creep_to(0.85 + 0.15 * (gi + 0.9) / max(1, len(groups)), f"Syncing {base(d)}")
         row = {"id": d["id"], "dvr": base(d) + (f" (+{len(g) - 1} split)" if len(g) > 1 else ""),
-               "status": None}
+               "status": None, "path": d["path"]}
         rows.append(row)
+        if stop_requested() and peek_cache(ARMED, d["path"]) is None:
+            row["status"] = "skipped"; row["why"] = "stopped before it was analysed"; continue
         g_start, g_end = g[0]["start"], g[-1]["end"]
         over = [a for a in act if min(g_end, a["end"]) > max(g_start, a["start"])]
         if not over:
@@ -743,32 +810,32 @@ def sync_clips(fps, clips, dvr_re, act_re, lead=1, prior_window=30.0, only_selec
         missing = [c["path"] for c in g + over if not os.path.exists(c["path"])]
         if missing:
             row["status"] = "skipped"; row["why"] = "file not found: " + missing[0]; continue
+        ev(d["path"], "arm", "run", "finding ARMED")
         arm = armed(d)
         if not arm:
+            ev(d["path"], "arm", "bad", "no ARMED")
             row["status"] = "skipped"; row["why"] = "ARMED not found on DVR"; continue
+        ev(d["path"], "arm", "ok", f"ARMED {mmss(arm[0])}")
         t_arm, f_arm, score, _ = arm
         row.update(armed_s=round(t_arm, 3), armed_score=round(score, 2))
         arm_seq = d["start"] + (t_arm - d["src0"]) / fd       # where ARMED sits now (seq frames)
 
-        # prop starts from every overlapping HD piece, kept only if visible on the timeline;
-        # read a window around the rough placement first, the whole file only if that finds nothing
-        def gather(windowed):
+        # the pair is whatever HD footage the DVR overlaps (placed roughly over it is enough): its prop
+        # starts, heard from the start of each overlapping HD clip as Match & sync does (first 45 s, then
+        # to 75 s), kept if visible on the timeline. Only if none: wider around where the DVR was dropped
+        # (a takeoff later in the recording)
+        def gather(stage):
             cands, hidden = [], 0
             for a in over:
-                pred, w0, wd = sync_window(a, arm_seq, fd, prior_window)
-                full = peek_cache(PROPS, a["path"])
-                first75 = peek_cache(f"{PROPS}@0+75", a["path"])      # left by Match & sync
-                if full is not None:
-                    found = full
-                elif first75 and w0 + wd <= 75:                        # already heard that stretch
-                    found = first75
-                elif windowed:
-                    if pred + prior_window + 3 < 0:
+                if stage < 2:
+                    found = head_props(a["path"], further=stage == 1)
+                else:
+                    pred = a["src0"] + (arm_seq - a["start"]) * fd
+                    w0, wd = round(max(0.0, pred - SYNC_WIDE)), round(2 * SYNC_WIDE)
+                    if pred + SYNC_WIDE < 0 or w0 >= media_info(a["path"])[0]:
                         continue
                     found = cached(f"{PROPS}@{w0}+{wd}", a["path"],
-                                   lambda: detect_prop_onsets(a["path"], start=w0, dur=wd))
-                else:                   # the first 75 s (a whole file can take minutes on a hard drive)
-                    found = cached(f"{PROPS}@0+75", a["path"], lambda: detect_prop_onsets(a["path"], start=0, dur=75))
+                                   lambda: detect_prop_onsets(a["path"], start=w0, dur=wd)) or []
                 for t, jump in found:
                     pos = a["start"] + (t - a["src0"]) / fd
                     if a["start"] <= pos < a["end"]:
@@ -777,9 +844,15 @@ def sync_clips(fps, clips, dvr_re, act_re, lead=1, prior_window=30.0, only_selec
                         hidden += 1
             return cands, hidden
 
-        cands, hidden = gather(True)
-        if not cands:
-            cands, hidden = gather(False)
+        ev(d["path"], "props", "run", "listening to the HD")
+        cands, hidden = gather(0)
+        for stage in (1, 2):
+            if cands or stop_requested():
+                break
+            ev(d["path"], "props", "run", "Listening further")
+            cands, hidden = gather(stage)
+        ev(d["path"], "props", "ok" if cands else "bad",
+           f"props → {base(cands[0][3])}" if len(cands) == 1 else f"{len(cands)} prop starts" if cands else "no props")
         if not cands:
             row["status"] = "skipped"
             row["why"] = ("prop start is trimmed out of the HD clip" if hidden
@@ -797,22 +870,12 @@ def sync_clips(fps, clips, dvr_re, act_re, lead=1, prior_window=30.0, only_selec
             else:
                 cands_near = min(cands, key=lambda c: abs(c[0] - arm_seq))
                 pos, t_prop, jump, a = cands_near
-                row["note"] = f"{len(cands)} prop sounds and motion unclear; used the one nearest the rough placement"
+                row["note"] = f"{len(cands)} prop sounds and motion unclear; used the one nearest where the DVR sits"
         else:
             pos, t_prop, jump, a = cands[0]
-            if abs(pos - arm_seq) * fd > prior_window:
-                row["note"] = f"rough placement >{prior_window:.0f}s off"
         t_pos = d["src0"] + (pos - d["start"]) * fd            # DVR time of the prop start, as placed now
         arm_win = [(t_pos - prior_window - 3, t_pos + prior_window + 3)]
-        if abs(pos - arm_seq) * fd > 10:
-            # rough placement says otherwise: maybe armed, disarmed and armed again
-            creep["label"] = f"Looking for another ARMED in {base(d)}"
-            runs = armed_runs_in(d["path"], arm_win)
-            near = min(runs, key=lambda r: abs(pos - (d["start"] + (r[0] - d["src0"]) / fd)), default=None)
-            if near and abs(pos - (d["start"] + (near[0] - d["src0"]) / fd)) * fd <= 10 and near[0] != t_arm:
-                t_arm = near[0]
-                row["armed_s"] = round(t_arm, 3)
-                row["note"] = (row.get("note", "") + " used a later ARMED (armed more than once)").strip()
+        # (where the DVR was dropped doesn't pick the ARMED: it's only roughly placed. The motion does:)
         # motion doesn't fit: maybe armed, disarmed and armed again; try every ARMED in the DVR
         try:
             ap_sig = motion_signal(a["path"], t_prop + MOTION_T0, False)
@@ -860,6 +923,46 @@ def sync_clips(fps, clips, dvr_re, act_re, lead=1, prior_window=30.0, only_selec
                    status="in sync" if delta == 0 else "move")
         log(f"  {row['dvr']}: ARMED {t_arm:.3f}s (score {score:.2f}) | props {base(a)} "
             f"{t_prop:.3f}s (+{jump:.0f} dB) -> {delta:+d} frames")
+
+    # stickcam clips: lined up by sound with the HD clip they sit over
+    for st_ in sticks:
+        if stop_requested():
+            break
+        creep_to(creep["f1"], f"Stickcam {base(st_)}: listening")
+        row = {"id": st_["id"], "dvr": base(st_), "kind": "stick", "status": None, "path": st_["path"]}
+        rows.append(row)
+        under = [a for a in act if min(st_["end"], a["end"]) > max(st_["start"], a["start"])]
+        if not under:
+            row["status"] = "skipped"; row["why"] = "no HD clip under it"
+            ev(st_["path"], "arm", "bad", "no HD clip under it")
+            continue
+        a = max(under, key=lambda a: min(st_["end"], a["end"]) - max(st_["start"], a["start"]))
+        if not (os.path.exists(st_["path"]) and os.path.exists(a["path"])):
+            row["status"] = "skipped"; row["why"] = "file not found"
+            continue
+        ev(st_["path"], "arm", "run", f"listening with {base(a)}")
+        h = sound_print(a["path"], STICK_HD_LISTEN)
+        r = None
+        for dur in (STICK_LISTEN, None):
+            r = sound_offset(h, sound_print(st_["path"], dur))
+            if r and r[1] >= STICK_MIN_Z and r[2] >= STICK_MIN_RATIO:
+                break
+            r = None
+        if not r:
+            row["status"] = "skipped"
+            row["why"] = f"its sound doesn't match the start of {base(a)}"
+            ev(st_["path"], "arm", "bad", "no sound match")
+            continue
+        lag, z, _ = r
+        new_start = a["start"] + int(round((st_["src0"] - a["src0"] - lag) / fd))
+        delta = new_start - st_["start"]
+        linked = st_.get("linked") or [x["id"] for x in clips if x["kind"] == "audio" and x.get("path") == st_["path"]
+                                       and (x["start"], x["end"]) == (st_["start"], st_["end"])]
+        row.update(action=base(a), detail=f"stickcam · sound → {base(a)}", move_frames=delta,
+                   movers=list(dict.fromkeys([st_["id"]] + [i for i in linked if i in by_id and i != st_["id"]])),
+                   status="in sync" if delta == 0 else "move")
+        ev(st_["path"], "arm", "ok", f"sound → {base(a)}")
+        log(f"  {base(st_)}: sound lines up with {base(a)} (z {z:.0f}) -> {delta:+d} frames")
 
     creep["stop"] = True
 
@@ -914,6 +1017,8 @@ def sync_clips(fps, clips, dvr_re, act_re, lead=1, prior_window=30.0, only_selec
         ready["order"] = order; order += 1
         current.update({i: ready["move_frames"] for i in ready["movers"]})
         pending.remove(ready)
+    for r in rows:
+        ev(r.get("path"), done="matched" if r["status"] in ("move", "in sync") else "nomatch")
     return rows
 
 
@@ -1000,6 +1105,170 @@ def media_info(path):
     return cached("info", path, f)
 
 
+# --------------------------------------------------------------- which camera
+# GoPro firmware prefix -> model (the FIRM box: "HD5.03.02.51.00" is a HERO5 Session)
+GOPRO_MODELS = {
+    "HD2": "HD HERO2", "HD3.01": "HERO3 White", "HD3.02": "HERO3 Silver", "HD3.03": "HERO3 Black",
+    "HD3.10": "HERO3+ Silver", "HD3.11": "HERO3+ Black", "HD3.20": "HERO (2014)", "HD3.21": "HERO+ LCD",
+    "HD3.22": "HERO+", "HD4.01": "HERO4 Silver", "HD4.02": "HERO4 Black", "HX1": "HERO4 Session",
+    "HD5.02": "HERO5 Black", "HD5.03": "HERO5 Session", "HD6": "HERO6 Black", "H18": "HERO (2018)",
+    "HD7": "HERO7 Black", "H19": "MAX", "HD8": "HERO8 Black", "HD9": "HERO9 Black", "H21": "HERO10 Black",
+    "H22.01": "HERO11 Black", "H22.03": "HERO11 Black Mini", "H23": "HERO12 Black", "H24": "HERO13 Black",
+}
+
+
+def _mp4_udta(path):
+    """{box name: first bytes} of the moov/udta boxes (and meta/ilst text) of an MP4/MOV: where
+    cameras write their model, firmware and serial numbers. Only box headers are read."""
+    import struct
+    found = {}
+    try:
+        end = os.path.getsize(path)
+        with open(path, "rb") as f:
+            def walk(start, stop, inside):
+                pos = start
+                while pos + 8 <= stop:
+                    f.seek(pos)
+                    hdr = f.read(16)
+                    size, typ = struct.unpack(">I4s", hdr[:8])
+                    hl = 8
+                    if size == 1:
+                        size, hl = struct.unpack(">Q", hdr[8:16])[0], 16
+                    elif size == 0:
+                        size = stop - pos
+                    if size < 8:
+                        return
+                    t = typ.decode("latin1")
+                    if t in ("moov", "udta", "meta"):
+                        walk(pos + hl + (4 if t == "meta" else 0), pos + size, inside + [t])
+                    elif "udta" in inside:
+                        f.seek(pos + hl)
+                        found.setdefault(t, f.read(min(size - hl, 512)))
+                    pos += size
+            walk(0, end, [])
+    except Exception:
+        pass
+    return found
+
+
+def camera_info(path):
+    """What recorded this file, from its metadata: {"name", "id", "w", "h", "fps"}. "id" tells two
+    cameras of the same model apart (serial numbers where the camera writes them). A file whose
+    metadata was stripped (stabilised exports, re-encodes) is an "Unknown source"."""
+    def f():
+        try:
+            j = json.loads(run(["ffprobe", "-v", "error", "-show_entries",
+                                "format_tags:stream=codec_type,width,height,r_frame_rate:stream_tags=handler_name,encoder",
+                                "-of", "json", path]))
+        except Exception:                                    # unreadable file: still listed, as unknown
+            j = {}
+        v = next((s for s in j.get("streams", []) if s.get("codec_type") == "video"), {})
+        tags = {k.lower(): str(x) for k, x in j.get("format", {}).get("tags", {}).items()}
+        vtags = {k.lower(): str(x).strip() for k, x in v.get("tags", {}).items()}
+        num, _, den = v.get("r_frame_rate", "0/1").partition("/")
+        fps = float(num) / float(den or 1) if float(den or 1) else 0.0
+        box = _mp4_udta(path)
+        text = lambda k: re.sub(r"[^ -~]", "", box.get(k, b"").decode("latin1")).strip()
+        name, ident = None, ""
+        firm = text("FIRM") or tags.get("firmware", "")
+        if firm:                                             # GoPro
+            model = next((m for pre, m in sorted(GOPRO_MODELS.items(), key=lambda kv: -len(kv[0]))
+                          if firm.startswith(pre)), None)
+            minf = re.search(r"MINF.{0,8}?(HERO[ -~]{1,30}|MAX[ -~]{0,20})", box.get("GPMF", b"").decode("latin1"))
+            name = "GoPro " + (minf.group(1).strip() if minf else model or f"(firmware {firm.split('.')[0]})")
+            ident = text("LENS") or text("CAME")
+        enc = tags.get("encoder", "") or vtags.get("encoder", "")
+        if not name and enc.upper().startswith("DJI"):       # "DJIAction2" -> "DJI Action 2"
+            name = "DJI " + re.sub(r"(?<=[a-z])(?=[A-Z0-9])|(?<=[0-9])(?=[A-Z])", " ", enc[3:]).strip()
+        if not name and "ICAT" in box and DVR_NAME in os.path.basename(path).lower():
+            name = "Orqa DVR"
+        if not name and DVR_NAME in os.path.basename(path).lower():
+            name = "Orqa DVR"
+        if not name:                                         # make/model as most cameras and phones write it
+            make = text("manu") or tags.get("make", "") or tags.get("com.apple.quicktime.make", "") \
+                or tags.get("com.android.manufacturer", "")
+            model = text("modl") or tags.get("model", "") or tags.get("com.apple.quicktime.model", "") \
+                or tags.get("com.android.model", "")
+            make, model = make.strip(), model.strip()
+            if model:
+                name = model if not make or model.lower().startswith(make.lower()) else f"{make} {model}"
+        if not name and re.search(r"gopro", enc + vtags.get("handler_name", ""), re.I):
+            name = "GoPro"
+        return {"name": name or "Unknown source", "id": ident, "w": v.get("width", 0), "h": v.get("height", 0),
+                "fps": round(fps, 3)}
+    return f()
+
+
+_CAM = {}                      # cache key -> camera_info, in memory (the disk cache is one big JSON)
+_UNKNOWN_CAM = {"name": "Unknown source", "id": "", "w": 0, "h": 0, "fps": 0.0}
+
+
+def camera_infos(paths):
+    """camera_info of many files: from memory or the disk cache, the rest probed 8 at a time and
+    written to the cache in one go. {path: info}"""
+    import concurrent.futures
+    keys = {}
+    for p in dict.fromkeys(paths):
+        try:
+            st = os.stat(p)
+            keys[p] = f"cam1|{os.path.abspath(p)}|{st.st_size}|{int(st.st_mtime)}"
+        except OSError:
+            pass
+    missing = [p for p, k in keys.items() if k not in _CAM]
+    if missing:
+        with _CACHE_LOCK:
+            try:
+                disk = json.load(open(CACHE))
+            except Exception:
+                disk = {}
+        for p in missing:
+            if keys[p] in disk:
+                _CAM[keys[p]] = disk[keys[p]]
+        todo = [p for p in missing if keys[p] not in _CAM]
+        if todo:
+            with concurrent.futures.ThreadPoolExecutor(8) as ex:
+                for p, info in zip(todo, ex.map(camera_info, todo)):
+                    _CAM[keys[p]] = info
+            with _CACHE_LOCK:
+                try:
+                    cache = json.load(open(CACHE))
+                except Exception:
+                    cache = {}
+                cache.update({keys[p]: _CAM[keys[p]] for p in todo})
+                try:
+                    tmp = CACHE + ".tmp"
+                    json.dump(cache, open(tmp, "w"), indent=1)
+                    os.replace(tmp, CACHE)
+                except Exception:
+                    pass
+    return {p: _CAM.get(keys.get(p), _UNKNOWN_CAM) for p in paths}
+
+
+def camera_groups(paths):
+    """Files grouped by the camera that recorded them and the resolution it recorded in (model + serial +
+    size; frame rates stay together): one role per group. A camera that flies in one resolution and films the sticks
+    in another shows up as two groups. The folders are listed for the user to recognise them.
+    [{"name", "key", "formats": ["2.7K 29.97p"], "folders": {folder name: [paths]}}]"""
+    def fmt(c):
+        h = c["h"] or 0
+        res = {2160: "4K", 1520: "2.7K", 2028: "2.7K", 2016: "2.7K", 1440: "1440p", 1080: "1080p",
+               960: "960p", 720: "720p"}.get(h, f"{c['w']}×{h}")
+        fps = c["fps"]
+        return f"{res} {fps:g}p" if abs(fps - round(fps)) < 0.01 else f"{res} {fps:.2f}p"
+    groups = {}
+    infos = camera_infos(paths)
+    for p in paths:
+        c = infos[p]
+        key = f"{c['name']}|{c['id']}|{c['w']}x{c['h']}"     # frame rate apart: a DVR switches PAL/NTSC
+        g = groups.setdefault(key, {"name": c["name"], "key": key, "formats": [], "folders": {}, "size": [c["w"], c["h"]]})
+        if fmt(c) not in g["formats"]:
+            g["formats"].append(fmt(c))
+        folder = os.path.basename(os.path.dirname(p)) or "(top)"
+        folder = next((k for k in g["folders"] if k.lower() == folder.lower()), folder)   # "Stab" = "stab"
+        g["folders"].setdefault(folder, []).append(p)
+    return list(groups.values())
+
+
 def file_number(path):
     """Recording order from the file name. GoPro numbers split files by chapter in front
     (GP01 0123, GP02 0123, GH01 0123…): the recording is the last four digits, the chapter the first two."""
@@ -1014,12 +1283,65 @@ def file_number(path):
     return int(m.group()) * 100 if m else -1
 
 
+ROLES = {}                 # path -> "dvr" | "hd" | "stick" | "leave", from the panel's camera picker
+ROLES_FILE = os.path.join(HERE, "camera_roles.json")      # camera group key -> role, remembered
+
+
+def is_dvr(path, dvr_re):
+    """DVR footage: the role the user gave its camera, else a file name matching the DVR pattern."""
+    if path in ROLES:
+        return ROLES[path] == "dvr"
+    return bool(re.search(dvr_re, os.path.basename(path or ""), re.I))
+
+
 def is_hd(path, dvr_re, hd_re=""):
-    """HD footage: any video that isn't a DVR recording, or matches the HD name pattern if one is set."""
+    """HD footage: the role the user gave its camera; else any video that isn't a DVR recording, or
+    matches the HD name pattern if one is set."""
+    if path in ROLES:
+        return ROLES[path] == "hd"
     name = os.path.basename(path or "")
     if re.search(dvr_re, name, re.I):
         return False
     return bool(re.search(hd_re, name, re.I)) if hd_re else bool(name)
+
+
+def is_stick(path):
+    return ROLES.get(path) == "stick"
+
+
+def load_roles():
+    try:
+        return json.load(open(ROLES_FILE, encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def apply_roles(paths, roles):
+    """Set ROLES for these files from {camera group key: role}, and remember the roles."""
+    ROLES.clear()
+    if not roles:
+        return
+    for g in camera_groups(paths):
+        r = roles.get(g["key"])
+        if r:
+            for ps in g["folders"].values():
+                for p in ps:
+                    ROLES[p] = r
+    try:
+        mem = load_roles()
+        mem.update(roles)
+        tmp = ROLES_FILE + ".tmp"
+        json.dump(mem, open(tmp, "w", encoding="utf-8"), indent=1)
+        os.replace(tmp, ROLES_FILE)
+    except Exception:
+        pass
+
+
+def known_roles(groups):
+    """Role of each camera group as the user set it before ({key: role}); a camera seen for the first
+    time has none: the user picks it in the panel (the tool doesn't guess)."""
+    mem = load_roles()
+    return {g["key"]: mem.get(g["key"]) for g in groups}
 
 
 def _ts(ct):
@@ -1325,6 +1647,8 @@ class LazyMotion:
             rows, cols = np.asarray(r).ravel(), np.asarray(c).ravel()
             return np.array([[self[int(i), int(j)] for j in cols] for i in rows]).reshape(len(rows), len(cols))
         i, j = int(r), int(c)
+        if (i, j) not in self.v and stop_requested():
+            return 0.0
         if (i, j) not in self.v:
             self.v[(i, j)] = motion_score(self.sig_d(i), self.sig_a(j))
         return self.v[(i, j)]
@@ -1636,6 +1960,28 @@ def flight_files(groups, act):
     return [p for p in dvr_files if os.path.exists(p)], [p for p in hd_files if os.path.exists(p)]
 
 
+def head_props(path, further=False):
+    """(time, jump) prop starts in an HD clip's first 45 s, or (further=True) in the rest of its first
+    75 s: the same listens and cache entries Match & sync uses, so a matched trip syncs from cache."""
+    full = peek_cache(PROPS, path)
+    if full is not None:
+        return [] if full == NONE else full
+    first75 = peek_cache(f"{PROPS}@0+75", path)
+    if first75 is not None:
+        return [] if further or first75 == NONE else first75
+    if not further:
+        return cached(f"{PROPS}@0+{FIRST_LISTEN}", path,
+                      lambda: detect_prop_onsets(path, start=0, dur=FIRST_LISTEN)) or []
+    a = FIRST_LISTEN - 5
+    if FIRST_LISTEN >= 75 or media_info(path)[0] <= FIRST_LISTEN:
+        return []
+    return cached(f"{PROPS}@{a}+{75 - a}", path, lambda: detect_prop_onsets(path, start=a, dur=75 - a)) or []
+
+
+SYNC_WIDE = 90.0       # s around a roughly placed DVR's ARMED, heard only if the HD clip's first 75 s have no
+                       # prop start (a takeoff later in the recording)
+
+
 def sync_window(a, arm_seq, fd, prior_window):
     """Sync selected reads an HD clip's audio around where the DVR's ARMED sits now:
     (predicted source time, window start, window length) in seconds."""
@@ -1655,7 +2001,7 @@ def prewarm_flights(groups, act, fd, prior_window):
                          and x.get("path") and os.path.exists(x["path"])]
     _, hc, dc = predict_costs([h["path"] for h in heads],
                               list(dict.fromkeys(x["path"] for g in groups for x in over_of(g))), DISK_MBPS)
-    win_share = (2 * prior_window + 6) / 75.0
+    win_share = FIRST_LISTEN / 75.0
     hd_guess = {id(g): max([hc.get(x["path"], 0.1) for x in over_of(g)] or [0.1]) * win_share for g in groups}
     est = {"dvr": max(1e-6, sum(dc.get(h["path"], 0.1) for h in heads)),
            "hd": max(1e-6, sum(hd_guess.values())), "dvr_done": 0.0, "hd_done": 0.0,
@@ -1701,6 +2047,8 @@ def prewarm_flights(groups, act, fd, prior_window):
     def dvr_part():
         try:
             for g in groups:
+                if stop_requested():
+                    break
                 d = g[0]
                 if d not in heads:
                     continue
@@ -1733,17 +2081,15 @@ def prewarm_flights(groups, act, fd, prior_window):
             arm_seq = d["start"] + (arm[0] - d["src0"]) / fd
             spent = 0.0
             for x in over_of(g):
-                pred, w0, wd = sync_window(x, arm_seq, fd, prior_window)
-                if pred + prior_window + 3 < 0 or w0 >= media_info(x["path"])[0]:
-                    continue                    # that window isn't in this clip
-                first75 = peek_cache(f"{PROPS}@0+75", x["path"])
-                if peek_cache(PROPS, x["path"]) is not None or (first75 and w0 + wd <= 75):
+                if (peek_cache(PROPS, x["path"]) is not None or peek_cache(f"{PROPS}@0+75", x["path"]) is not None
+                        or peek_cache(f"{PROPS}@0+{FIRST_LISTEN}", x["path"]) is not None):
                     continue                    # already heard
+                if stop_requested():
+                    continue
                 cost = hc.get(x["path"], 0.1) * win_share
-                begin("hd", cost, f"HD {os.path.basename(x['path'])}: listening around the takeoff")
+                begin("hd", cost, f"HD {os.path.basename(x['path'])}: listening for the takeoff")
                 try:
-                    cached(f"{PROPS}@{w0}+{wd}", x["path"],
-                           lambda: detect_prop_onsets(x["path"], start=w0, dur=wd))
+                    head_props(x["path"])
                 except Exception:
                     pass
                 with lock:
@@ -1824,23 +2170,45 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
         dchains = chain_files(dvr_paths, 15, follower_ok=follower_ok)
         out["dchains"] = dchains
         for i, ch in enumerate(dchains):
+            if stop_requested():
+                UNREAD.update(c[0] for c in dchains[i:])
+                for c in dchains[i:]:
+                    ev(c[0], "arm", "bad", "not analysed", done="unread")
+                log(f"Stopped: {len(dchains) - i} DVR recording(s) not analysed")
+                break
             log(f"DVR {i + 1}/{len(dchains)}: {os.path.basename(ch[0])}")
             todo = [p_ for p_ in ch if p_ not in credited]
             start("dvr", sum(dvr_cost.get(p_, 1.0) for p_ in todo), f"DVR {os.path.basename(ch[0])}")
+            for p_ in ch[1:]:
+                ev(p_, "arm", "ok", f"continues {os.path.basename(ch[0])}", done="part")
+            ev(ch[0], "arm", "run", "finding ARMED")
             a = armed(ch[0])
             if a:
                 D.append((ch, a[0]))
+                ev(ch[0], "arm", "ok", f"ARMED {mmss(a[0])}")
             else:
                 no_arm.append(ch)
+                ev(ch[0], "arm", "bad", "no ARMED")
             tick(sum(dvr_cost.get(p_, 1.0) for p_ in todo), "dvr", f"DVR {os.path.basename(ch[0])}")
 
     def action_side():                     # mostly disk: audio + a short stretch of 4K per flight
         achains = achains_pre
         out["achains"] = achains
         for i, ch in enumerate(achains):
+            if stop_requested():
+                UNREAD.update(c[0] for c in achains[i:])
+                for c in achains[i:]:
+                    ev(c[0], "arm", "bad", "not analysed", done="unread")
+                log(f"Stopped: {len(achains) - i} HD recording(s) not analysed")
+                break
             log(f"HD {i + 1}/{len(achains)}: {os.path.basename(ch[0])}")
             start("hd", sum(hd_cost.get(p_, 1.0) for p_ in ch), f"HD {os.path.basename(ch[0])}")
+            for p_ in ch[1:]:
+                ev(p_, "arm", "ok", f"continues {os.path.basename(ch[0])}", done="part")
+            ev(ch[0], "arm", "run", "listening")
             cues = find_prop_starts(ch[0], whole=False, first=FIRST_LISTEN)
+            ev(ch[0], "arm", "ok" if cues else "bad",
+               (f"props {mmss(cues[0])}" + (f" +{len(cues) - 1}" if len(cues) > 1 else "")) if cues else "no props")
             if not cues:
                 quiet.append(ch)           # nothing heard yet: listen harder only if the clocks can't help
             for t in cues:
@@ -1870,7 +2238,7 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
     learn_pace({"hd": est["hd"], "dvr": est["dvr"]}, {"hd": est["hd_end"], "dvr": est["dvr_end"]})
     dchains, achains = out["dchains"], out["achains"]
     log(f"{len(dchains)} DVR recordings, {len(achains)} HD recordings (split files joined)")
-    progress(0.95, "Matching flights", 1.0)
+    progress(0.95, "Stopped: lining up what's analysed" if stop_requested() else "Matching flights", 1.0)
     M = LazyMotion(D, A)                   # motion compared only where it's needed
 
     nd, na = M.shape
@@ -1886,15 +2254,18 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
             if TD[i] is not None and TA[j] is not None:
                 G[i, j] = (TD[i] + D[i][1]) - (TA[j] + A[j][1])
     got, groups = _clock_pairs(G, M, chain_id)
-    if not groups and (quiet or FIRST_LISTEN < 75):
+    if not groups and (quiet or FIRST_LISTEN < 75) and not stop_requested():
         # the clocks can't say where the flights are: listen further into the HD recordings
         log(f"Clocks don't line up: listening further into the HD recordings")
         progress(0.95, "Clocks don't line up: listening further into the HD clips", 3.0 * len(achains))
         for ch in achains:
             have = [t for c_, t in A if c_ is ch]
+            if not have:
+                ev(ch[0], "more", "run", "Listening further")
             new = [t for t in listen_further(ch[0]) if all(abs(t - h) > 0.1 for h in have)]
             if not have:                       # nothing at 18 dB: listen again with a lower bar (noisy
                 new += [t for t in listen_weaker(ch[0]) if all(abs(t - h) > 0.1 for h in new)]  # places)
+                ev(ch[0], "more", "ok" if new else "bad", f"props {mmss(new[0])}" if new else "Listening further")
             for t in new:
                 A.append((ch, t))
         nd, na = M.shape
@@ -1919,11 +2290,13 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
         return [g for _, g in sorted(out)]
 
     extra = []                                                # pairs found from the clock alone
-    if groups:
+    if groups and not stop_requested():
         used_a = {chain_id(j) for _, j, _ in got}
         used_d = {i for i, _, _ in got}
         left = [i for i in range(nd) if i not in used_d]
         for i in range(nd):
+            if stop_requested():
+                break
             if i in used_d:
                 continue
             k_ = left.index(i)
@@ -2000,9 +2373,25 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
                               "score": round(sc, 2), "how": "clock, no prop sound"})
                 used_d.add(i); used_a.add(id(ch))
 
+    announced = {}                      # DVR chain -> HD chain the file list was told about
+
+    def phase(name, found, tried):
+        for dch, ach, how in found:
+            if id(dch) not in announced:
+                announced[id(dch)] = id(ach)
+                ev(dch[0], name, "ok", f"{how} → {os.path.basename(ach[0])}")
+        for dch in tried:
+            if id(dch) not in announced:
+                ev(dch[0], name, "bad", name)
+
+    if not stop_requested():
+        phase("clock", [(D[i][0], A[j][0], "clock") for i, j, _ in got] +
+              [(p_["dvr"], p_["action"], "clock") for p_ in extra],
+              list({id(ch): ch for ch, _ in D}.values()))
+
     # 1b. DVRs that never show ARMED (recording started mid-flight): the clock says where they sit,
     #     motion fine-tunes it
-    if groups:
+    if groups and not stop_requested():
         used_a = {chain_id(j) for _, j, _ in got} | {id(p["action"]) for p in extra}
         for ch in no_arm:
             td = _ts(media_info(ch[0])[1])
@@ -2039,14 +2428,17 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
 
     # HD recordings still free may have taken off after the first listen: hear the rest of their 75 s
     # (only these: the clock already placed the others)
-    if FIRST_LISTEN < 75 and groups:
+    if FIRST_LISTEN < 75 and groups and not stop_requested():
         taken_a = {chain_id(j) for _, j, _ in got} | {id(p["action"]) for p in extra}
         add = []
         for ch in achains:
             if id(ch) in taken_a:
                 continue
             have = [t for c_, t in A if c_ is ch]
-            add += [(ch, t) for t in listen_further(ch[0]) if all(abs(t - h) > 0.1 for h in have)]
+            ev(ch[0], "more", "run", "Listening further")
+            new = [(ch, t) for t in listen_further(ch[0]) if all(abs(t - h) > 0.1 for h in have)]
+            ev(ch[0], "more", "ok" if new else "bad", f"props {mmss(new[0][1])}" if new else "Listening further")
+            add += new
         if add:
             log(f"Listening further into {len({id(c) for c, _ in add})} unmatched HD recording(s)")
             for ch, t in add:
@@ -2129,8 +2521,11 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
         pairs.append({"dvr": D[i][0], "t_arm": D[i][1], "action": A[j][0], "t_prop": A[j][1],
                       "score": round(float(M[i, j]), 2), "how": how})
     pairs += extra
+    if not stop_requested():
+        phase("motion", [(p_["dvr"], p_["action"], p_["how"]) for p_ in pairs if not p_["how"].startswith("clock")],
+              list({id(ch): ch for ch, _ in D}.values()))
 
-    if groups:
+    if groups and not stop_requested():
         used_hd = {id(p["action"]) for p in pairs}
 
         def gaps_near(td):
@@ -2175,7 +2570,7 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
 
     # doubtful pairs: maybe armed, disarmed and armed again - try every ARMED in that DVR
     for p in pairs:
-        if p["score"] >= WEAK_SCORE or p["how"].startswith("clock"):
+        if p["score"] >= WEAK_SCORE or p["how"].startswith("clock") or stop_requested():
             continue
         log(f"Weak match for {os.path.basename(p['dvr'][0])}: looking for another ARMED…")
         runs = cached(ARMED + "_all", p["dvr"][0], lambda: detect_armed_runs(p["dvr"][0]))
@@ -2192,7 +2587,7 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
         if best[1] != p["t_arm"] and best[0] >= p["score"] + 0.1:
             p.update(score=round(float(best[0]), 2), t_arm=best[1], t_prop=best[2], how="re-armed")
     for p in pairs:
-        if not p["how"].startswith("clock") or p.get("aligned") or p["score"] >= WEAK_SCORE:
+        if not p["how"].startswith("clock") or p.get("aligned") or p["score"] >= WEAK_SCORE or stop_requested():
             continue
         dpath, apath = p["dvr"][0], p["action"][0]
         offs = []
@@ -2213,7 +2608,7 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
     # the HD flights still free at its place in the flying order
     matched_d = {id(p["dvr"]) for p in pairs}
     for i, (ch, t0) in enumerate(D):
-        if id(ch) in matched_d or groups:      # with working clocks, step 1 already looked
+        if id(ch) in matched_d or groups or stop_requested():      # with working clocks, step 1 already looked
             continue
         before = [g for g in got if g[0] < i]
         after = [g for g in got if g[0] > i]
@@ -2245,7 +2640,7 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
     deaf = [ch for ch in achains if id(ch) not in used_a and not any(c_ is ch for c_, _ in A)
             and media_info(ch[0])[0] >= MOTION_DUR + 4]
     free = [ch for ch in dchains if id(ch) not in used_d]
-    if deaf and free:
+    if deaf and free and not stop_requested():
         log(f"No prop sound in {len(deaf)} HD recording(s): lining them up with the free DVRs by motion")
         cand = []
         for k_, ch in enumerate(deaf):
@@ -2288,17 +2683,162 @@ def match_flights(dvr_paths, act_paths, log=print, order=None):
         order.update(T)
     md = {id(p["dvr"]) for p in pairs}
     ma = {id(p["action"]) for p in pairs}
+    for p in pairs:                     # matched by a later rescue (re-armed, same DVR, motion only)
+        if announced.get(id(p["dvr"])) != id(p["action"]):
+            announced[id(p["dvr"])] = id(p["action"])
+            ev(p["dvr"][0], "rescue", "ok", f"{p['how']} → {os.path.basename(p['action'][0])}")
+        ev(p["dvr"][0], done="matched")
+        ev(p["action"][0], "match", "ok", f"← {os.path.basename(p['dvr'][0])}", done="matched")
+    for c in [c for c in dchains if id(c) not in md] + [c for c in achains if id(c) not in ma]:
+        if c[0] not in UNREAD:
+            ev(c[0], "match", "bad", "no match", done="nomatch")
     return (pairs, sorted([c for c in dchains if id(c) not in md], key=when),
             sorted([c for c in achains if id(c) not in ma], key=when))
 
 
-def plan_layout(fps, dvr_paths, act_paths, other_paths, gap_s=30.0, lead=1, log=print):
-    """Timeline plan: each HD flight on V1 with its DVR synced on V2, gap_s apart;
-    everything unmatched afterwards. Placements: {path, track (1-based video track), start (frames)}.
+# ------------------------------------------------------------------ stickcam (experimental)
+# A camera filming the pilot's hands on the radio: no OSD, no prop start of its own, and its clock is
+# often reset at every power-on (GoPro: 2013-01-01 00:00). What it shares with the HD camera is sound:
+# the pilot talking, clapping or snapping fingers next to the quad before takeoff, the props spooling
+# up. Each stickcam recording is lined up with the HD recordings by cross-correlating their sound
+# onsets over every possible offset; a true pair gives one sharp peak.
+STICK_HD_LISTEN = 45.0       # s of each HD recording compared: its start, the pilot's claps and voice
+                             # before takeoff (the first prop listen reads it anyway; longer only adds
+                             # flight noise: 45 s scored better than 75 s on the Julian trip)
+STICK_LISTEN = 60.0          # s of each stickcam recording compared (claps are before takeoff; reading a
+                             # whole clip means reading the whole file: 6.5 GB = +340 s on the Julian trip)
+STICK_MIN_Z = 8.0          # the best offset must stand out this far (z) from all the others...
+STICK_MIN_RATIO = 1.25       # ... and beat the next best offset (more than 1 s away) by this factor
+SND_SR, SND_HOP = 16000, 160  # sound print: 10 ms steps
+
+
+def _sound_key(path, dur):
+    st = os.stat(path)
+    return os.path.join(SIG_DIR, f"{os.path.basename(path)}_{st.st_size}_{int(st.st_mtime)}_snd{dur or 'all'}.npy")
+
+
+def _sound_onsets(x, sr):
+    """10 ms sound onsets (rises in loudness, z-scored) of mono samples x."""
+    x = np.asarray(x, np.float32)
+    k = sr // SND_SR
+    if k > 1:                                          # 48 kHz from the prop listen: average down to 16 kHz
+        x = x[:len(x) // k * k].reshape(-1, k).mean(1)
+    x = np.diff(x, prepend=0)                          # tilted toward the highs: claps and snaps are sharp
+    n = len(x) // SND_HOP
+    if n < 200:
+        return np.zeros(0, np.float32)
+    e = 10 * np.log10((x[:n * SND_HOP].reshape(n, SND_HOP) ** 2).mean(1) + 1e-10)
+    on = np.minimum(np.maximum(np.diff(e, prepend=e[0]), 0), 20)
+    return ((on - on.mean()) / (on.std() + 1e-9)).astype(np.float32)
+
+
+def _save_sound(path, dur, on):
+    try:
+        os.makedirs(SIG_DIR, exist_ok=True)
+        np.save(_sound_key(path, dur), on)
+    except Exception:
+        pass
+
+
+def keep_sound_print(path, a, sr):
+    """The prop listen read a recording's start anyway: keep its sound print for the stickcam."""
+    try:
+        if len(a) >= sr and not os.path.exists(_sound_key(path, STICK_HD_LISTEN)):
+            _save_sound(path, STICK_HD_LISTEN, _sound_onsets(a[:int(STICK_HD_LISTEN * sr)], sr))
+    except Exception:
+        pass
+
+
+def sound_print(path, dur=None):
+    """Sound onsets of a recording's first `dur` s, or all of it; kept on disk next to the motion signals."""
+    key = _sound_key(path, dur)
+    if os.path.exists(key):
+        return np.load(key)
+    cmd = ["ffmpeg", "-v", "error", "-i", path] + (["-t", f"{dur:.3f}"] if dur else [])
+    with DISK:
+        raw = run(cmd + ["-map", "0:a:0", "-ac", "1", "-ar", str(SND_SR), "-f", "s16le", "-"])
+    on = _sound_onsets(np.frombuffer(raw, np.int16).astype(np.float32) / 32768, SND_SR)
+    _save_sound(path, dur, on)
+    return on
+
+
+def sound_offset(hd, stick, min_overlap=10.0):
+    """Best offset between two sound prints: (lag_s, z, ratio) with stick time = HD time + lag;
+    z: how far the peak stands out, ratio: peak over the best offset more than 1 s away."""
+    a, b = hd, stick
+    if len(a) < 200 or len(b) < 200:
+        return None
+    n = len(a) + len(b) - 1
+    N = 1 << (n - 1).bit_length()
+    c = np.fft.irfft(np.fft.rfft(b, N) * np.conj(np.fft.rfft(a, N)), N)
+    lags = np.r_[np.arange(0, len(b)), np.arange(-len(a) + 1, 0)]
+    c = np.r_[c[:len(b)], c[N - len(a) + 1:]]
+    ov = np.minimum(len(b), len(a) + lags) - np.maximum(0, lags)
+    ok = ov >= min(min_overlap * 100, 0.8 * min(len(a), len(b)))
+    lags, sc = lags[ok], c[ok] / np.sqrt(ov[ok])
+    if len(sc) < 10:
+        return None
+    k = int(sc.argmax())
+    far = np.abs(lags - lags[k]) > 100
+    second = float(sc[far].max()) if far.any() else 0.0
+    z = float((sc[k] - sc.mean()) / (sc.std() + 1e-9))
+    return lags[k] / 100.0, z, float(sc[k] / second) if second > 0 else 99.0
+
+
+def match_stickcams(stick_chains, hd_chains, log=print):
+    """Each stickcam recording paired with at most one HD recording (and the other way round), by
+    sound. Returns ([{"stick": chain, "action": chain, "lag": s, "z": .., "ratio": ..}], unmatched sticks)."""
+    if not stick_chains or not hd_chains:
+        return [], list(stick_chains)
+    log(f"Stickcam: comparing the sound of {len(stick_chains)} stickcam and {len(hd_chains)} HD recordings")
+    H = [sound_print(ch[0], STICK_HD_LISTEN) for ch in hd_chains]
+    cands = []
+    for sc in stick_chains:
+        for p_ in sc[1:]:
+            ev(p_, "arm", "ok", f"continues {os.path.basename(sc[0])}", done="part")
+    for i, sc in enumerate(stick_chains):
+        if stop_requested():
+            for sc_ in stick_chains[i:]:
+                UNREAD.add(sc_[0])
+                ev(sc_[0], "arm", "bad", "not analysed", done="unread")
+            break
+        progress(0.95 + 0.04 * i / len(stick_chains), f"Stickcam {os.path.basename(sc[0])}: listening")
+        ev(sc[0], "arm", "run", "listening")
+        for dur in (STICK_LISTEN, None):         # its start; all of it only if the start matched nothing
+            S = sound_print(sc[0], dur)
+            mine = []
+            for j, h in enumerate(H):
+                r = sound_offset(h, S)
+                if r and r[1] >= STICK_MIN_Z and r[2] >= STICK_MIN_RATIO:
+                    mine.append((r[1] * min(r[2], 3.0), i, j, r))
+            if mine or len(S) < STICK_LISTEN * 100 - 50:    # found, or that already was the whole clip
+                break
+        cands += mine
+    pairs, used_s, used_h = [], set(), set()
+    for _, i, j, (lag, z, ratio) in sorted(cands, key=lambda c: -c[0]):
+        if i in used_s or j in used_h:
+            continue
+        used_s.add(i)
+        used_h.add(j)
+        pairs.append({"stick": stick_chains[i], "action": hd_chains[j], "lag": lag, "z": z, "ratio": ratio})
+        ev(stick_chains[i][0], "arm", "ok", f"sound → {os.path.basename(hd_chains[j][0])}", done="matched")
+    for i, sc in enumerate(stick_chains):
+        if i not in used_s and sc[0] not in UNREAD:
+            ev(sc[0], "arm", "bad", "no sound match", done="nomatch")
+    log(f"Stickcam: {len(pairs)} of {len(stick_chains)} lined up by sound")
+    return pairs, [ch for i, ch in enumerate(stick_chains) if i not in used_s]
+
+
+def plan_layout(fps, dvr_paths, act_paths, other_paths, gap_s=30.0, lead=1, log=print, stick_paths=()):
+    """Timeline plan: each HD flight on V1 with its DVR synced on V2 (and its stickcam above), gap_s
+    apart; everything unmatched afterwards. Placements: {path, track (1-based video track), start (frames)}.
     'after_previous' marks a split file that goes right after the previous clip on its track."""
     fd = 1 / fps
     T = {}
     pairs, lone_d, lone_a = match_flights(dvr_paths, act_paths, log, order=T)
+    hd_chains = list({id(c): c for c in [p["action"] for p in pairs] + list(lone_a)}.values())
+    sticks, lone_s = match_stickcams(chain_files(list(stick_paths), 3), hd_chains, log) if stick_paths else ([], [])
+    stick_of = {id(sp["action"]): sp for sp in sticks}
     nframes = lambda p: int(math.ceil(media_info(p)[0] * fps))
     chain_len = lambda ch: sum(nframes(p) for p in ch)
     gap = int(round(gap_s * fps))
@@ -2320,15 +2860,18 @@ def plan_layout(fps, dvr_paths, act_paths, other_paths, gap_s=30.0, lead=1, log=
         else:
             groups.append({"action": p["action"], "pairs": [p]})
     when = lambda c: T.get(id(c), float("inf"))
+    groups += [{"action": c, "pairs": []} for c in lone_a if id(c) in stick_of]     # HD + stickcam, no DVR
     blocks = [(when(g["action"]), 0, g) for g in groups] + \
-             [(when(c), 1, (c, 1, "HD")) for c in lone_a] + [(when(c), 1, (c, 2, "DVR")) for c in lone_d]
+             [(when(c), 1, (c, 1, "HD")) for c in lone_a if id(c) not in stick_of] + \
+             [(when(c), 1, (c, 2, "DVR")) for c in lone_d]
     blocks.sort(key=lambda b: b[:2])
 
     def put_lone(chain, track, kind):
         nonlocal cursor
         put(chain, track, cursor)
         report.append({"dvr" if kind == "DVR" else "action": os.path.basename(chain[0]), "path": chain[0],
-                       "how": "no match", "kind": kind, "start": cursor})
+                       "how": "no match", "kind": kind, "start": cursor,
+                       "unread": chain[0] in UNREAD})
         cursor += chain_len(chain) + gap
 
     for _, lone_block, g in blocks:
@@ -2344,6 +2887,10 @@ def plan_layout(fps, dvr_paths, act_paths, other_paths, gap_s=30.0, lead=1, log=
             rel.append(sound - dvr_lead(p["dvr"][0], lead) - math.ceil(p["t_arm"] / fd - 1e-9))
         lo = min([0] + rel)
         hi = max([chain_len(g["action"])] + [r + chain_len(p["dvr"]) for r, p in zip(rel, g["pairs"])])
+        sp = stick_of.get(id(g["action"]))
+        if sp:                                   # stick time = HD time + lag: it starts lag s before the HD
+            srel = int(round(-sp["lag"] / fd))
+            lo, hi = min(lo, srel), max(hi, srel + chain_len(sp["stick"]))
         base = cursor - lo
         put(g["action"], 1, base)
         last_end = {}
@@ -2355,7 +2902,17 @@ def plan_layout(fps, dvr_paths, act_paths, other_paths, gap_s=30.0, lead=1, log=
                            "dvr_path": p["dvr"][0], "action_path": g["action"][0],
                            "split": len(p["dvr"]) + len(g["action"]) - 2, "score": p["score"], "how": p["how"],
                            "start": base + r})
+        if sp:                                   # above the DVR(s)
+            put(sp["stick"], max([3] + [t + 1 for t in last_end]), base + srel)
+            report.append({"stick": os.path.basename(sp["stick"][0]), "action": os.path.basename(g["action"][0]),
+                           "stick_path": sp["stick"][0], "action_path": g["action"][0], "kind": "stick",
+                           "how": "sound", "score": round(sp["z"], 1), "start": base + srel})
         cursor = base + hi + gap
+    for ch in lone_s:                            # stickcam clips no HD recording's sound matched
+        put(ch, 1, cursor)
+        report.append({"stick": os.path.basename(ch[0]), "stick_path": ch[0], "kind": "stick", "how": "no match",
+                       "start": cursor})
+        cursor += chain_len(ch) + gap
     for p in sorted(other_paths, key=os.path.basename):
         put_lone([p], 1, "other")
     log(f"{len(pairs)} matched ({sum(p['how'] == 'order' for p in pairs)} by order only), "
@@ -2370,8 +2927,10 @@ TIMED_STEPS = ["detect_armed_runs", "detect_prop_onsets", "motion_signal", "refi
 
 
 def process_job(job_path, out_path):
-    global TIMING
+    global TIMING, STOP_FILE
     job = json.load(open(job_path, encoding="utf-8"))
+    STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(job_path)), "stop")
+    UNREAD.clear()
     try:
         ensure_ffmpeg()
     except RuntimeError as e:                          # the panel shows this message as it is
@@ -2382,6 +2941,24 @@ def process_job(job_path, out_path):
             res = estimate_actions(job)
         except Exception as e:
             res = {"error": str(e)}
+        json.dump(res, open(out_path, "w", encoding="utf-8"))
+        return
+    if job.get("mode") == "cameras":                # the picker: camera groups with their roles
+        try:
+            paths = list(dict.fromkeys(job["paths"]))
+            groups = camera_groups(paths)
+            if job.get("save_roles"):                # DVR in the Corner: remember what the user set
+                mem = load_roles()
+                mem.update({k: v for k, v in job["save_roles"].items() if v})
+                json.dump(mem, open(ROLES_FILE, "w", encoding="utf-8"), indent=1)
+            roles = known_roles(groups)
+            res = {"groups": [{"key": g["key"], "name": g["name"], "formats": g["formats"],
+                               "clips": sum(len(v) for v in g["folders"].values()), "folders": list(g["folders"]),
+                               "paths": [p for v in g["folders"].values() for p in v], "size": g["size"],
+                               "role": roles[g["key"]], "known": roles[g["key"]] is not None} for g in groups]}
+        except Exception as e:
+            import traceback
+            res = {"error": str(e), "trace": traceback.format_exc()}
         json.dump(res, open(out_path, "w", encoding="utf-8"))
         return
     TIMING = {"t0": time.time(), "progress": [], "steps": []}
@@ -2402,22 +2979,31 @@ def process_job(job_path, out_path):
         global PROGRESS
         PROGRESS = lambda f, label, eta=None: print(f"@@ {f:.4f} {-1 if eta is None else round(eta)} {label}",
                                                      flush=True)
+        global EVENT
+        EVENT = lambda kind, obj: print(f"@@{kind} " + json.dumps(obj), flush=True)
+        if job.get("mode") == "build":
+            apply_roles(list(dict.fromkeys(job["paths"])), job.get("roles"))
+        else:
+            apply_roles(list(dict.fromkeys(c["path"] for c in job["clips"] if c.get("kind") == "video" and c.get("path"))),
+                        job.get("roles"))
         if job.get("mode") == "build":
             log = lambda m: (lines.append(m), print(m, flush=True))
             dvr_re, act_re = job.get("dvr", DVR_NAME), job.get("action", "")
             paths = list(dict.fromkeys(job["paths"]))
-            dv = [p for p in paths if re.search(dvr_re, os.path.basename(p), re.I)]
+            dv = [p for p in paths if is_dvr(p, dvr_re)]
+            st = [p for p in paths if is_stick(p)]
             ac = [p for p in paths if is_hd(p, dvr_re, act_re)]
-            ot = [p for p in paths if p not in dv and p not in ac]
+            ot = [p for p in paths if p not in dv and p not in ac and p not in st]
+            EVENT("files", [{"p": p, "r": r} for r, ps in (("dvr", dv), ("hd", ac), ("stick", st)) for p in ps])
             placements, report = plan_layout(job["fps"], dv, ac, ot, job.get("gap", 30.0),
-                                             job.get("lead", 1), log)
-            res = {"placements": placements, "report": report, "log": lines}
+                                             job.get("lead", 1), log, stick_paths=st)
+            res = {"placements": placements, "report": report, "log": lines, "stopped": stop_requested()}
         else:
             rows = sync_clips(job["fps"], job["clips"], job.get("dvr", DVR_NAME),
                               job.get("action", ""), job.get("lead", 1),
                               job.get("prior_window", 30.0), job.get("only_selected", True),
                               log=lines.append)
-            res = {"rows": rows, "log": lines}
+            res = {"rows": rows, "log": lines, "stopped": stop_requested()}
     except Exception as e:
         import traceback
         res = {"error": str(e), "trace": traceback.format_exc(), "log": lines}

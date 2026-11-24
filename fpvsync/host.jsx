@@ -306,6 +306,27 @@ function fpv_put(path, track, ticks) {
     return 'ok: ' + end;
 }
 
+// Make sure the sequence has at least n video tracks (the stickcam goes above the DVR). The QE DOM's
+// addTracks takes (video count, after video index, audio count, audio type, after audio index, ...);
+// older builds take fewer arguments, so a few forms are tried and the result is checked.
+function fpv_ensureTracks(n) {
+    var seq = app.project.activeSequence;
+    var have = seq.videoTracks.numTracks;
+    if (have >= n) return 'ok: ' + have;
+    app.enableQE();
+    var q = qe.project.getActiveSequence();
+    var tries = [
+        function () { q.addTracks(n - have, have, 0, 1, seq.audioTracks.numTracks, 0, 0, 0); },
+        function () { q.addTracks(n - have, have, 0); },
+        function () { q.addTracks(n - have); }
+    ];
+    for (var i = 0; i < tries.length; i++) {
+        try { tries[i](); } catch (e) {}
+        if (app.project.activeSequence.videoTracks.numTracks >= n) return 'ok: ' + app.project.activeSequence.videoTracks.numTracks;
+    }
+    return 'error: could not add video tracks (have ' + app.project.activeSequence.videoTracks.numTracks + ', need ' + n + ')';
+}
+
 // Remove the sound of DVR files (name matches the pattern) within [fromTicks, toTicks).
 function fpv_dropAudio(pattern, fromTicks, toTicks) {
     var seq = app.project.activeSequence, re = new RegExp(pattern, 'i'), n = 0;
