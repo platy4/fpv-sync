@@ -2,7 +2,7 @@
 
 A Premiere Pro panel that lines up your **analog FPV DVR** recordings with your **HD camera** footage (GoPro, DJI Action, or any camera that records sound), and your **stickcam** (a camera filming your hands on the radio) too. It then lays out the picture-in-picture for you.
 
-> **For now: Orqa analog DVR only.** It reads the Betaflight OSD burned into the DVR recordings of Orqa goggles (NTSC and PAL). Other goggles and digital systems (DJI, Walksnail, HDZero) aren't supported yet.
+> **For now: Orqa analog DVR, with Betaflight's stock OSD font.** It reads the Betaflight OSD burned into the DVR recordings of Orqa goggles (NTSC and PAL), and recognises ARMED in the default font only: a custom OSD font won't be read. Other goggles and digital systems (DJI, Walksnail, HDZero) aren't supported yet.
 
 How it lines things up:
 - **DVR to HD:** the frame where Betaflight's OSD shows **ARMED** on the DVR, and the moment the props spin up in the HD camera's sound. That's within a frame or two.
@@ -19,7 +19,7 @@ How it lines things up:
 - Optional: an NVIDIA graphics card makes reading 4K footage faster. Without one it still works.
 
 Footage it expects:
-- **Orqa goggles' analog DVR recordings**, with the OSD burned in, and the Betaflight **ARMED** message visible when you arm.
+- **Orqa goggles' analog DVR recordings**, with the OSD burned in, and the Betaflight **ARMED** message visible when you arm, in Betaflight's **stock OSD font**.
 - An **HD camera that records sound**, so the props can be heard.
 - Optional: a **stickcam** that records sound.
 
