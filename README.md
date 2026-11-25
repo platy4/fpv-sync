@@ -69,11 +69,11 @@ For flights you've already paired by hand: drop each DVR or stickcam clip roughl
 
 ### PiP Layout
 
-Resizes the selected DVR and stickcam clips and moves them to their spot. Drag the DVR or stickcam box in the preview: it snaps to the corners, the middle of each edge, or the centre. Sizes are in pixels: the DVR defaults to 76 % of its own width (973 px for an Orqa's 1280 px), the stickcam to the same width as the DVR.
+Resizes the selected DVR and stickcam clips and moves them to their spot. Drag the DVR or stickcam box in the preview: it snaps to the corners, the middle of each edge, or the centre. Sizes are in pixels: the DVR defaults to 970 px wide whatever its resolution, the stickcam to the same width as the DVR.
 
 Match & Sync and Sync have a **PiP Layout** tickbox that does the same right after syncing. The settings are shared and remembered.
 
-<p align="center"><img src="panel-pip.png" width="480" alt="PiP Layout: DVR bottom-right, stickcam bottom-left, 973 px wide"></p>
+<p align="center"><img src="panel-pip.png" width="480" alt="PiP Layout: DVR bottom-right, stickcam bottom-left, 970 px wide"></p>
 
 ### While it runs
 
