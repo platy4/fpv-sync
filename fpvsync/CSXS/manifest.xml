@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="9.0" ExtensionBundleId="com.fpvsync.panel" ExtensionBundleVersion="0.2.1"
+<ExtensionManifest Version="9.0" ExtensionBundleId="com.fpvsync.panel" ExtensionBundleVersion="0.2.2"
                    ExtensionBundleName="FPV Sync" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <ExtensionList>
-    <Extension Id="com.fpvsync.panel.main" Version="0.2.1"/>
+    <Extension Id="com.fpvsync.panel.main" Version="0.2.2"/>
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>
