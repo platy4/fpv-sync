@@ -23,6 +23,11 @@ function logLine(s) {
 }
 
 const $ = (id) => document.getElementById(id);
+// the version at the top, from the panel's own manifest (so it can't go out of date)
+try {
+  const mv = /ExtensionBundleVersion="([^"]+)"/.exec(fs.readFileSync(path.join(panelDir, 'CSXS', 'manifest.xml'), 'utf8'));
+  if (mv) $('ver').textContent = 'v' + mv[1].replace(/\.0$/, '');
+} catch (e) {}
 const evalES = (code, quiet) => new Promise((res) => window.__adobe_cep__.evalScript(code, (out) => {
   if (!quiet) {
     logLine('> ' + code.slice(0, 200));
@@ -197,7 +202,7 @@ function drawLiveNow() {
   const corner = live.mode === 'place';       // DVR in the Corner: no matching, so no counters
   $('tiles').innerHTML = corner ? '' : `<div class="tiles">${tile(matched, undefined, 'matched', 'ok')}` +
     `${tile(live.synced, undefined, 'synced', 'ok')}${tile(nomatch, undefined, 'no match', nomatch ? 'bad' : '')}</div>`;
-  const short = (t) => String(t).replace(/\.(mp4|mov)(\.mp4)?/gi, '');
+  const short = (t) => String(t).replace(/\.(mp4|mov|avi)(\.mp4)?/gi, '');
   const chip = (c) => `<span class="chip ${c.s}">${c.s === 'ok' ? '✓ ' : c.s === 'bad' ? '✗ ' : c.s === 'warn' ? '⚠ ' : ''}` +
     `${esc(short(c.t))}</span>`;
   // one column per kind of footage (side by side when the panel is wide enough), headed by its
@@ -216,7 +221,7 @@ function drawLiveNow() {
         .map((c) => (sk && c.s === 'run' ? { c: c.c, s: '', t: 'skipped' } : c));
       return `<div class="row${f.p === live.cur && !f.done && !sk ? ' cur' : ''}${sk ? ' skipped' : ''}` +
         `${f.p === live.sel ? ' picked' : ''}" data-p="${esc(f.p)}">` +
-        `<div class="n" title="${esc(f.p)}">${esc(base(f.p).replace(/\.(mp4|mov)(\.mp4)?$/i, ''))}</div><div class="chips">` +
+        `<div class="n" title="${esc(f.p)}">${esc(base(f.p).replace(/\.(mp4|mov|avi)(\.mp4)?$/i, ''))}</div><div class="chips">` +
         (real.length ? real.map(chip).join('')
                      : `<span class="chip">${sk || f.done === 'skipped' ? 'skipped' : 'waiting'}</span>`) +
         `</div>${icons(f, sk)}</div>`;

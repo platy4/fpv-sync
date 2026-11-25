@@ -14,6 +14,11 @@
   .wrap { padding:10px; }
   .lbl { font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin:12px 0 6px; }
   .lbl:first-child { margin-top:2px; }
+  /* logo, name and version at the top */
+  .brand { display:flex; align-items:center; gap:8px; margin:0 0 4px; }
+  .brand svg { width:28px; height:auto; flex:none; }
+  .brand .name { font-weight:600; font-size:13px; color:var(--bright); }
+  .brand .ver { margin-left:auto; color:var(--muted); font-size:11px; }
   .btns { display:flex; flex-direction:column; gap:4px; }
   button { display:flex; align-items:center; gap:8px; width:100%; height:28px; padding:0 10px;
            border:1px solid var(--btn-line); border-radius:3px; background:var(--btn); color:#d0d0d0;
@@ -153,6 +158,7 @@
 </head>
 <body>
 <div class="wrap">
+  <div class="brand"><svg viewBox="0 0 300 213" aria-hidden="true"><defs><mask id="mobrand" maskUnits="userSpaceOnUse"><rect x="-50" y="-50" width="400" height="320" fill="white"/><polygon points="82.6,130.5 142.4,130.5 113.4,159.5 53.6,159.5" fill="black"/></mask><mask id="mcbrand" maskUnits="userSpaceOnUse"><rect x="-50" y="-50" width="400" height="320" fill="white"/><polygon points="186.6,53.5 246.4,53.5 217.4,82.5 157.6,82.5" fill="black"/></mask></defs><rect x="23.0" y="23.0" width="179" height="122" fill="none" stroke="#ff9f1c" stroke-width="26" mask="url(#mobrand)"/><rect x="98.0" y="68.0" width="179" height="122" fill="none" stroke="#22d3f5" stroke-width="26" mask="url(#mcbrand)"/></svg><span class="name">FPV Sync</span><span id="ver" class="ver"></span></div>
   <div class="lbl">Actions</div>
   <div class="btns">
     <button id="build"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M4 17h10"/><path d="M14 4l3 3-3 3M14 14l3 3-3 3"/><circle cx="20" cy="7" r="1.5"/><circle cx="20" cy="17" r="1.5"/></svg>Match &amp; Sync</button>

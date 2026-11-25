@@ -43,9 +43,34 @@ def set_osd_search(mode):
     SX, SY, SW, SH = OSD_BOXES[OSD_MODE]
 ARM_THRESHOLD = 0.55            # NCC score that counts as "ARMED visible"
 DISARMED_S_MIN = 0.4            # NCC of the letter before ARMED with an "S": DISARMED (it scores 0.75-0.95, ARMED <= 0.25)
-ARM_MIN_RUN = 8                 # consecutive frames needed (ARMED shows ~35)
+ARM_MIN_RUN = 8                 # consecutive frames needed at 60 fps (ARMED shows ~35); see arm_frames()
 DVR_NAME = "orqa"               # DVR recordings: file names with "orqa" anywhere (ORQA0123.MP4, day1_orqa_12.46.mp4)
-ARMED_STEP = 6                  # coarse scan: every 6th frame; a real ARMED can be as short as 7 frames
+ARMED_STEP = 6                  # (60 fps) coarse scan: every 6th frame; a real ARMED can be as short as 7 frames
+
+# Any DVR, not just Orqa: Betaflight shows ARMED for ~0.5 s, so the scan works in seconds (6 frames at
+# 60 fps = 0.1 s; 2-3 frames at 25-30 fps), and the frame is always scaled to 1280x960 first (DVRs are
+# 4:3), so positions are fractions of the picture. What differs between goggles is how wide their DVR
+# samples the analog line: the OSD letters come out a few % wider or narrower (Fatshark HDO2: +5 %).
+# So ARMED is looked for at several widths until one of that DVR's recordings shows it clearly; that
+# width is then remembered for the DVR (dvr_kinds.json: camera name + size + frame rate).
+ARMED_STEP_S = 0.1              # coarse scan step, s
+ARM_RUN_S = 0.115               # ARMED this long in a row confirms it (7 frames at 60 fps)
+ARM_SX = tuple(round(0.85 + 0.025 * k, 3) for k in range(17))     # template widths tried: 85 % .. 125 %
+ARM_LEARN_MIN = 0.65            # a DVR's width is remembered only from an ARMED this clear
+ARM_FLAT_SD = 1.5               # flat picture (black, no signal) can't score: per-pixel contrast floor
+KINDS_FILE = os.path.join(HERE, "dvr_kinds.json")
+ORQA_COMBOS = ((0, 1.0), (1, 1.0))            # (template: 0 NTSC / 1 PAL, width): the Orqa's own
+ALL_COMBOS = tuple((t_, sx) for t_ in (0, 1) for sx in ARM_SX)
+ARMED_ANY = "armed7"            # cache key for DVRs other than Orqa (Orqa keeps ARMED: same results)
+
+
+def arm_step(fps):
+    return max(1, int(round(ARMED_STEP_S * fps)))
+
+
+def arm_frames(fps):
+    """Frames of ARMED in a row that confirm it (7 at 60 fps, 6 at 50, 3 at 25-30)."""
+    return max(3, int(round(ARM_RUN_S * fps)))
 
 
 # ----------------------------------------------------------------- utilities
@@ -241,10 +266,103 @@ def armed_refs():
     return _ARMED_REFS
 
 
+_STRETCH = {}
+
+
+def _hstretch(a, sx):
+    """Image a drawn sx times as wide (linear, numpy only)."""
+    h, w = a.shape
+    w2 = max(4, int(round(w * sx)))
+    xs = (np.arange(w2) + 0.5) * w / w2 - 0.5
+    return np.stack([np.interp(xs, np.arange(w), row) for row in a]).astype(np.float32)
+
+
+def stretched(t_, sx):
+    """(zero-mean template, norm) of ARMED reference t_ drawn sx times as wide."""
+    key = (t_, sx)
+    if key not in _STRETCH:
+        refs = armed_refs()
+        if t_ >= len(refs):
+            _STRETCH[key] = None
+        elif sx == 1.0:
+            _STRETCH[key] = refs[t_]
+        else:
+            t2 = _hstretch(np.load((TEMPLATE, TEMPLATE_PAL)[t_]).astype(np.float32), sx)
+            tz = t2 - t2.mean()
+            _STRETCH[key] = (tz, float(np.sqrt((tz * tz).sum())))
+    return _STRETCH[key]
+
+
+def is_orqa_dvr(path):
+    try:
+        return camera_info(path).get("name") == "Orqa DVR"
+    except Exception:
+        return False
+
+
+def dvr_kind(path):
+    """A DVR model as far as the OSD goes: camera name, picture size and frame rate (PAL / NTSC)."""
+    ci = camera_info(path)
+    fps = ci.get("fps") or probe_fps(path)[0]
+    return f"{ci.get('name') or '?'}|{ci.get('w')}x{ci.get('h')}@{int(round(fps))}"
+
+
+_KINDS = None
+
+
+def _kinds():
+    global _KINDS
+    if _KINDS is None:
+        try:
+            _KINDS = json.load(open(KINDS_FILE, encoding="utf-8"))
+        except Exception:
+            _KINDS = {}
+    return _KINDS
+
+
+def armed_combos(path):
+    """Which ARMED widths to look for in this DVR: the Orqa's own; what earlier recordings of the
+    same kind of DVR showed (two goggles can share a size and frame rate: then both widths); or, for a
+    DVR not seen yet, all of them."""
+    try:
+        if is_orqa_dvr(path):
+            return ORQA_COMBOS
+        got = _kinds().get(dvr_kind(path))
+        return tuple((int(a), float(b)) for a, b in got) if got else ALL_COMBOS
+    except Exception:
+        return ALL_COMBOS
+
+
+def learn_combo(path, combo, score):
+    """A clear ARMED at a width this kind of DVR hadn't shown yet: remember that width (and the steps
+    either side), next to any it already had."""
+    if score < ARM_LEARN_MIN or combo is None:
+        return
+    try:
+        k = dvr_kind(path)
+        if is_orqa_dvr(path):
+            return
+        t_, sx = combo
+        have = [tuple(c) for c in _kinds().get(k, [])]
+        near = [(t_, round(sx + d, 3)) for d in (-0.025, 0.0, 0.025)
+                if ARM_SX[0] - 1e-6 <= sx + d <= ARM_SX[-1] + 1e-6]
+        new = [c for c in near if c not in have]
+        if not new:
+            return
+        _kinds()[k] = have + new
+        tmp = KINDS_FILE + ".tmp"
+        json.dump(_kinds(), open(tmp, "w", encoding="utf-8"), indent=1)
+        os.replace(tmp, KINDS_FILE)
+    except Exception:
+        pass
+
+
 _S_REF = None
+_S_STRETCH = {}
+_last = threading.local()        # the (template, width) that gave armed_score's best, per thread
 
 
-def _disarmed(g, x, y, cw):
+def _disarmed(g, x, y, cw, sx=1.0):
     """Is there an "S" one letter left of the ARMED found at (x, y)? Then it's DISARMED, which the
     OSD shows in the same place whenever the quad is disarmed (start of a recording, after landing)."""
     global _S_REF
@@ -254,6 +372,12 @@ def _disarmed(g, x, y, cw):
     if _S_REF is False:
         return False
     sz, sn = _S_REF
+    if sx != 1.0:                        # the "S" as wide as the letters found
+        if sx not in _S_STRETCH:
+            s2 = _hstretch(np.load(DISARMED_S).astype(np.float32), sx)
+            s2 = s2 - s2.mean()
+            _S_STRETCH[sx] = (s2, float(np.sqrt((s2 * s2).sum())))
+        sz, sn = _S_STRETCH[sx]
     h, w = sz.shape
     y0, y1 = max(0, y - 3), min(g.shape[0], y + 3 + h)
     x0, x1 = max(0, x - cw - 6), min(g.shape[1], x - cw + 6 + w)
@@ -265,11 +389,10 @@ def _disarmed(g, x, y, cw):
     return float(ncc.max()) >= DISARMED_S_MIN
 
 
-def armed_score(f):
-    """Best normalised cross-correlation of any ARMED reference in the search box (0 when it's the
-    ARMED of a DISARMED). The frame's filtering, FFT and local variance are shared by the references
-    (padded to a fast FFT size)."""
-    refs = armed_refs()
+def armed_score(f, combos=ORQA_COMBOS):
+    """Best normalised cross-correlation of any ARMED reference (at the widths in combos) in the search
+    box (0 when it's the ARMED of a DISARMED). The frame's filtering, FFT and local variance are shared
+    by the references (padded to a fast FFT size). _last.combo: the one that scored best."""
     g = half(highpass(f))
     H, W = g.shape
     S = (-(-H // 16) * 16, -(-W // 16) * 16)
@@ -277,7 +400,12 @@ def armed_score(f):
     c1 = c2 = None
     sd = {}
     best, at = -1.0, None
-    for tz, tn in refs:
+    best_c = None
+    for combo in combos:
+        ref = stretched(*combo)
+        if ref is None:
+            continue
+        tz, tn = ref
         th, tw = tz.shape
         key = (id(tz), S)
         if key not in _TFFT:
@@ -288,13 +416,17 @@ def armed_score(f):
                 c2 = np.pad(np.cumsum(np.cumsum(g * g, 0), 1), ((1, 0), (1, 0)))
             box = lambda c: c[th:, tw:] - c[:-th, tw:] - c[th:, :-tw] + c[:-th, :-tw]
             s1, s2 = box(c1), box(c2)
-            sd[(th, tw)] = np.sqrt(np.maximum(s2 - s1 * s1 / (th * tw), 1e-6))
+            v = np.maximum(s2 - s1 * s1 / (th * tw), 1e-6)
+            sd_ = np.sqrt(v)
+            sd_[v < (ARM_FLAT_SD ** 2) * th * tw] = np.inf          # flat picture: no ARMED there
+            sd[(th, tw)] = sd_
         num = np.fft.irfft2(Gf * _TFFT[key], s=S)[: H - th + 1, : W - tw + 1]
         sc = num / (sd[(th, tw)] * tn)
         k = int(sc.argmax())
         if sc.flat[k] > best:
-            best, at = float(sc.flat[k]), (k // sc.shape[1], k % sc.shape[1], tw // 5)
-    if best >= ARM_THRESHOLD and _disarmed(g, at[1], at[0], at[2]):
+            best, at, best_c = float(sc.flat[k]), (k // sc.shape[1], k % sc.shape[1], tw // 5), combo
+    _last.combo = best_c
+    if best >= ARM_THRESHOLD and _disarmed(g, at[1], at[0], at[2], best_c[1] if best_c else 1.0):
         return 0.0
     return best
 
@@ -322,10 +454,17 @@ def detect_armed(path, verbose=False):
     return tuple(runs[0]) if runs else None
 
 
-def detect_armed_runs(path, step=ARMED_STEP, first_only=False):
+def detect_armed_runs(path, step=None, first_only=False):
     """ARMED runs in the usual OSD area; if none at all, look across the whole middle of the frame."""
     prefetch(path)
     runs = _armed_runs(path, step, first_only)
+    known = armed_combos(path)
+    if not runs and known is not ALL_COMBOS and known is not ORQA_COMBOS:
+        # a DVR of a kind seen before, but nothing at its widths: maybe another goggle with the same
+        # picture size and frame rate. Once over with the other widths (what it finds is learned too).
+        rest = tuple(c for c in ALL_COMBOS if c not in known)
+        if rest:
+            runs = _armed_runs(path, step, first_only, combos=rest)
     if not runs and OSD_MODE == "auto":
         set_osd_search("wide")
         try:
@@ -335,18 +474,22 @@ def detect_armed_runs(path, step=ARMED_STEP, first_only=False):
     return runs
 
 
-def _armed_runs(path, step=ARMED_STEP, first_only=False, dur=None, start=0.0):
+def _armed_runs(path, step=None, first_only=False, dur=None, start=0.0, combos=None):
     """Every ARMED in the recording: [(time_s, frame_index, peak_score, frames_seen)], frame-exact starts.
-    Scans every `step`-th frame (scoring is most of the cost), then checks each hit frame by frame:
-    ARM_MIN_RUN frames in a row, so one stray frame can't pass for an ARMED."""
+    Scans every `step`-th frame (0.1 s; scoring is most of the cost), then checks each hit frame by
+    frame: arm_frames() in a row, so one stray frame can't pass for an ARMED."""
     fps, _ = probe_fps(path)
+    step = step or arm_step(fps)
+    known = armed_combos(path)
+    combos = combos or known
+    learning = combos is ALL_COMBOS or combos is not known      # widths this DVR hasn't shown yet
     f0 = int(round(start * fps))
     t0 = (f0 - 0.5) / fps if f0 > 0 else 0.0     # mid-frame, so the first frame read is exactly f0
     out, cur, missed = [], None, 0
     for i, f in dvr_frames(path, start=t0, step=step, dur=dur):
         if i % 25 == 0 and getattr(_abort, "on", False) and is_skipped(path):
             raise SkipFile(path)
-        s_ = armed_score(f)
+        s_ = armed_score(f, combos)
         if s_ >= ARM_THRESHOLD:
             if cur is None:
                 cur = [f0 + i * step, 0, 0.0]
@@ -359,14 +502,17 @@ def _armed_runs(path, step=ARMED_STEP, first_only=False, dur=None, start=0.0):
             continue
         missed = 0
         if cur is not None:
-            r = _confirm_armed(path, fps, cur, step)
+            r = _confirm_armed(path, fps, cur, step, combos, learning)
             cur = None
             if r:
                 out.append(r)
+                now = armed_combos(path)              # a width learned just now: only those from here
+                if learning and now is not ALL_COMBOS and (known is ALL_COMBOS or set(now) - set(known)):
+                    combos, learning, known = now, False, now
                 if first_only:
                     return out
     if cur is not None:
-        r = _confirm_armed(path, fps, cur, step)
+        r = _confirm_armed(path, fps, cur, step, combos, learning)
         if r:
             out.append(r)
     return out
@@ -397,19 +543,27 @@ def armed_runs_in(path, spans):
     return out
 
 
-def _confirm_armed(path, fps, cand, step):
-    """Frame by frame around a coarse hit: first frame of ARM_MIN_RUN ARMED frames in a row, or None."""
+def _confirm_armed(path, fps, cand, step, combos=ORQA_COMBOS, learning=False):
+    """Frame by frame around a coarse hit: first frame of arm_frames() ARMED frames in a row, or None.
+    For a DVR not seen before, the width that fitted best is remembered."""
     k, n, peak = cand
+    need = arm_frames(fps)
     lo = max(0, k - step + 1)
-    hi = k + max(n - 1, 0) * step + ARM_MIN_RUN + 1
+    hi = k + max(n - 1, 0) * step + need + 2
     start, run, miss = None, 0, 0
+    best = (0.0, None)
     t0 = (lo - 0.5) / fps if lo > 0 else 0.0
     for j, f in dvr_frames(path, start=t0, dur=(hi - lo + 0.5 + 1) / fps):
-        if armed_score(f) >= ARM_THRESHOLD:
+        s_ = armed_score(f, combos)
+        if s_ >= ARM_THRESHOLD:
             start = lo + j if start is None else start
             run += 1
             miss = 0
-            if run >= ARM_MIN_RUN - 1:           # 7 frames, what the old every-3rd scan accepted
+            if s_ > best[0]:
+                best = (s_, getattr(_last, "combo", None))
+            if run >= need:                      # 7 frames at 60 fps, what the old every-3rd scan accepted
+                if learning:
+                    learn_combo(path, best[1], best[0])
                 return [start / fps, start, peak, n * step]
         elif start is not None and miss == 0:
             miss = 1                        # one analog glitch frame inside the ARMED
@@ -746,7 +900,15 @@ _CACHE_LOCK = threading.RLock()
 NONE = "__none__"           # cached "nothing found" (e.g. a DVR with no ARMED)
 
 
+def _ckind(kind, path):
+    """ARMED results of a non-Orqa DVR live under their own key (older runs looked only at Orqa's width)."""
+    if kind.startswith(ARMED) and not kind.startswith(ARMED_ANY) and not is_orqa_dvr(path):
+        return ARMED_ANY + kind[len(ARMED):]
+    return kind
+
+
 def peek_cache(kind, path):
+    kind = _ckind(kind, path)
     try:
         st = os.stat(path)
         key = f"{kind}|{os.path.abspath(path)}|{st.st_size}|{int(st.st_mtime)}"
@@ -757,6 +919,7 @@ def peek_cache(kind, path):
 
 
 def cached(kind, path, fn):
+    kind = _ckind(kind, path)
     st = os.stat(path)
     key = f"{kind}|{os.path.abspath(path)}|{st.st_size}|{int(st.st_mtime)}"
     hit = peek_cache(kind, path)
@@ -1866,11 +2029,12 @@ def armed_near(path, t, win=2.5):
     fps, _ = probe_fps(path)
     lo = max(0.0, t - win)
     run_start, n = None, 0
+    combos = armed_combos(path)
     for k, f in dvr_frames(path, start=lo, dur=2 * win):
-        if armed_score(f) >= ARM_THRESHOLD:
+        if armed_score(f, combos) >= ARM_THRESHOLD:
             run_start = k if run_start is None else run_start
             n += 1
-            if n >= ARM_MIN_RUN:
+            if n >= arm_frames(fps) + 1:
                 return lo + run_start / fps
         else:
             run_start, n = None, 0
