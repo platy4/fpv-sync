@@ -8,16 +8,31 @@
 
 <p align="center"><img src="demo.gif" width="880" alt="FPV Sync in Premiere Pro: a trip's footage dumped in the timeline, Match & Sync, then every flight synced with the DVR picture-in-picture"></p>
 
-A Premiere Pro panel that lines up your **analog FPV DVR** recordings with your **HD camera** footage (GoPro, DJI Action, or any camera that records sound), and your **stickcam** (a camera filming your hands on the radio) too. It then lays out the picture-in-picture for you.
+A Premiere Pro panel that lines up your **HD camera** footage, your **stickcam** (a camera filming your hands on the radio) and your **analog FPV DVR** recordings, then lays out the picture-in-picture for you. Drop a whole trip in the timeline at once: it works out which clips belong to which flight and syncs them to the frame.
 
-> **Analog DVR, with Betaflight's stock OSD font.** It reads the Betaflight OSD burned into your goggles' DVR recordings, NTSC or PAL, at any resolution and frame rate (tested on Orqa, Fatshark HDO2 and Skyzone). It recognises **ARMED in Betaflight's stock font only**: if you fly a custom OSD font, arming won't be detected (see [OSD font](#osd-font)). Digital systems (DJI, Walksnail, HDZero) aren't supported yet.
+## What it syncs
 
-How it lines things up:
-- **DVR to HD:** the frame where Betaflight's OSD shows **ARMED** on the DVR, and the moment the props spin up in the HD camera's sound. That's within a frame or two.
-- **Stickcam to HD:** by sound. Both cameras hear you talk, clap or snap your fingers before takeoff, so the panel slides one soundtrack over the other until they match.
-- **Which DVR goes with which HD clip:** from the cameras' clocks, the file numbers and the motion in both videos, so you can drop a whole trip in at once.
+Everything is lined up against your **HD footage**, so you need at least one HD camera. The stickcam and the DVR are optional.
 
-<p align="center"><img src="panel.png" width="480" alt="The FPV Sync panel after matching a trip: DVR, HD and stickcam footage side by side, each file with the steps that matched it"></p>
+| Camera | Examples | Needs |
+|---|---|---|
+| **HD camera** (the reference) | DJI Action 2, GoPro, any camera on the quad | **Sound**, to hear the props spin up |
+| **Stickcam** | Any camera filming your hands on the radio | **Sound** |
+| **Analog DVR** | Any analog goggles, NTSC or PAL (tested on Orqa, Fatshark HDO2 and Skyzone) | Betaflight's **ARMED** message in the **stock OSD font**, preset *Default* (see [OSD font](#osd-font)). Digital systems (DJI, Walksnail, HDZero) aren't supported yet. |
+
+## How it lines them up
+
+| Camera | Synced to the frame by | Paired with the right HD clip by |
+|---|---|---|
+| **HD camera** | it's the reference everything else is lined up to | — |
+| **Stickcam** | the **sound**: it slides the stickcam's soundtrack over the HD clip's until they line up, like Shazam (talk, clap or snap your fingers before takeoff) | the same sound match, plus the **clock** once it has proven reliable |
+| **Analog DVR** | the frame where **ARMED** appears, matched to the moment the **props spin up** in the HD clip's sound (within a frame or two) | the cameras' **clocks**, the **motion** in both videos, the file numbers, and the **goggles' mic** if yours records sound |
+
+**Clocks are only trusted once they prove themselves.** A clock can be years off or in the wrong time zone, that's fine as long as it keeps counting: the panel checks that the gap between two cameras' clocks stays the same from flight to flight. A clock that resets every time the camera powers on (some GoPros do) never passes that check and is simply ignored.
+
+When a flight has no ARMED (the recording started mid-flight) or its props can't be heard (wind, a loud spot), the panel falls back on the clocks and the motion in both videos, and marks the flight **check** so you can look at it.
+
+<p align="center"><img src="panel.png" width="480" alt="The FPV Sync panel after matching a trip: HD, stickcam and DVR footage side by side, each file with the steps that matched it"></p>
 
 ## What you need
 
@@ -26,10 +41,7 @@ How it lines things up:
 - **ffmpeg**: easiest is to open a terminal and run `winget install Gyan.FFmpeg`
 - Optional: an NVIDIA graphics card makes reading 4K footage faster. Without one it still works.
 
-Footage it expects:
-- **Your goggles' analog DVR recordings** (Orqa, Fatshark and other analog goggles, NTSC or PAL), with the OSD burned in and the Betaflight **ARMED** message visible when you arm, in Betaflight's **stock OSD font** (a custom font won't be read). The first time a new kind of goggles shows ARMED, the panel learns how its DVR draws the OSD and remembers it.
-- An **HD camera that records sound**, so the props can be heard.
-- Optional: a **stickcam** that records sound.
+Footage: see [What it syncs](#what-it-syncs). The first time a new kind of goggles shows ARMED, the panel learns how its DVR draws the OSD and remembers it.
 
 ## OSD font
 
@@ -63,7 +75,7 @@ Open the panel from Premiere's **top menu bar: Window → Extensions → FPV Syn
 
 1. **Pick an action** at the top: **Match & Sync**, **Sync** or **PiP Layout**. The picked one turns blue, and its instructions show underneath.
 2. **Select the clips** in the timeline (Ctrl+A for everything).
-3. **Say what each camera is.** The panel lists the cameras in your selection, read from the files themselves (for example *Orqa DVR*, *DJI Action 2*, *GoPro HERO5 Session*), and you set each one to **DVR**, **HD**, **Stickcam** or **None**. It remembers your choice for that camera, so next time it's already filled in. The list follows your selection as you change it.
+3. **Say what each camera is.** The panel lists the cameras in your selection, read from the files themselves (for example *Orqa DVR*, *DJI Action 2*, *GoPro HERO5 Session*), and you set each one to **HD**, **Stickcam**, **DVR** or **None**. It remembers your choice for that camera, so next time it's already filled in. The list follows your selection as you change it.
    DVR cameras also get an **Audio kept / Audio removed** button. Keep it if your goggles record sound through a mic: that sound then also helps match the flights. Set it to removed if your goggles record silence: the DVR sound is taken out of the timeline and never listened to.
 4. Click **Start**.
 
@@ -71,17 +83,17 @@ Open the panel from Premiere's **top menu bar: Window → Extensions → FPV Syn
 
 ### Match & Sync
 
-Put your HD, DVR and stickcam clips in a sequence (their order and placement don't matter), select them and Start. Each DVR is matched to its flight and synced, each stickcam clip is lined up with its HD clip by sound, and everything is laid out in recording order, 30 s apart, right where your selection was. Footage without a match stays in its place in time, so DVR-only or HD-only clips are easy to find.
+Put your HD, stickcam and DVR clips in a sequence (their order and placement don't matter), select them and Start. Each stickcam clip is lined up with its HD clip by sound, each DVR is matched to its flight and synced, and everything is laid out in recording order, 30 s apart, right where your selection was. Footage without a match stays in its place in time, so DVR-only or HD-only clips are easy to find.
 
 Clips you didn't select (other cameras, B-roll) are never changed. If the synced flights need more room, the clips after them are pushed later.
 
 ### Sync
 
-For flights you've already paired by hand: drop each DVR or stickcam clip roughly over its HD footage, select them and Start. Each clip is synced to the HD footage it overlaps. Only the selected flights are touched.
+For flights you've already paired by hand: drop each stickcam or DVR clip roughly over its HD footage, select them and Start. Each clip is synced to the HD footage it overlaps. Only the selected flights are touched.
 
 ### PiP Layout
 
-Resizes the selected DVR and stickcam clips and moves them to their spot. Drag the DVR or stickcam box in the preview: it snaps to the corners, the middle of each edge, or the centre. Sizes are in pixels: the DVR defaults to 970 px wide whatever its resolution, the stickcam to the same width as the DVR.
+Resizes the selected stickcam and DVR clips and moves them to their spot. Drag the stickcam or DVR box in the preview: it snaps to the corners, the middle of each edge, or the centre. Sizes are in pixels: the DVR defaults to 970 px wide whatever its resolution, the stickcam to the same width as the DVR.
 
 Match & Sync and Sync have a **PiP Layout** tickbox that does the same right after syncing. The settings are shared and remembered.
 
@@ -89,7 +101,7 @@ Match & Sync and Sync have a **PiP Layout** tickbox that does the same right aft
 
 ### While it runs
 
-The progress bar shows the percentage and the time so far. Below it, every file is listed in its column (DVR, HD, stickcam) with each step as it happens: **ARMED** found, **props** heard, matched by **clock** or **motion**, lined up by **sound**, and so on. Green means it worked, red means that step didn't. The counters on top show how many were matched and synced, and how many have no match.
+The progress bar shows the percentage and the time so far. Below it, every file is listed in its column (one per kind of camera) with each step as it happens: **ARMED** found, **props** heard, matched by **clock** or **motion**, lined up by **sound**, and so on. Green means it worked, red means that step didn't. The counters on top show how many were matched and synced, and how many have no match.
 
 **Click a file** to jump the playhead to it in the timeline. The other way round works too: select one clip in the timeline and its file is highlighted in the list.
 
