@@ -1,8 +1,14 @@
-# FPV Sync for Premiere Pro
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="logo-dark.png">
+    <img src="logo-light.png" width="420" alt="FPV Sync">
+  </picture>
+</p>
+<h3 align="center">Syncs all your FPV footage in one click</h3>
 
 A Premiere Pro panel that lines up your **analog FPV DVR** recordings with your **HD camera** footage (GoPro, DJI Action, or any camera that records sound), and your **stickcam** (a camera filming your hands on the radio) too. It then lays out the picture-in-picture for you.
 
-> **For now: Orqa analog DVR, with Betaflight's stock OSD font.** It reads the Betaflight OSD burned into the DVR recordings of Orqa goggles (NTSC and PAL), and recognises ARMED in the default font only: a custom OSD font won't be read. Other goggles and digital systems (DJI, Walksnail, HDZero) aren't supported yet.
+> **Analog DVR, with Betaflight's stock OSD font.** It reads the Betaflight OSD burned into your goggles' DVR recordings, NTSC or PAL, at any resolution and frame rate (tested on Orqa and Fatshark HDO2). It recognises **ARMED in Betaflight's stock font only**: if you fly a custom OSD font, arming won't be detected. Digital systems (DJI, Walksnail, HDZero) aren't supported yet.
 
 How it lines things up:
 - **DVR to HD:** the frame where Betaflight's OSD shows **ARMED** on the DVR, and the moment the props spin up in the HD camera's sound. That's within a frame or two.
@@ -19,7 +25,7 @@ How it lines things up:
 - Optional: an NVIDIA graphics card makes reading 4K footage faster. Without one it still works.
 
 Footage it expects:
-- **Orqa goggles' analog DVR recordings**, with the OSD burned in, and the Betaflight **ARMED** message visible when you arm, in Betaflight's **stock OSD font**.
+- **Your goggles' analog DVR recordings** (Orqa, Fatshark and other analog goggles, NTSC or PAL), with the OSD burned in and the Betaflight **ARMED** message visible when you arm, in Betaflight's **stock OSD font** (a custom font won't be read). The first time a new kind of goggles shows ARMED, the panel learns how its DVR draws the OSD and remembers it.
 - An **HD camera that records sound**, so the props can be heard.
 - Optional: a **stickcam** that records sound.
 
@@ -63,7 +69,7 @@ For flights you've already paired by hand: drop each DVR or stickcam clip roughl
 
 ### PiP Layout
 
-Resizes the selected DVR and stickcam clips and moves them to their spot. Drag the DVR or stickcam box in the preview: it snaps to the corners, the middle of each edge, or the centre. Sizes are in pixels: the DVR defaults to 973 px wide (76 % of the Orqa's 1280 px), the stickcam to the same width as the DVR.
+Resizes the selected DVR and stickcam clips and moves them to their spot. Drag the DVR or stickcam box in the preview: it snaps to the corners, the middle of each edge, or the centre. Sizes are in pixels: the DVR defaults to 76 % of its own width (973 px for an Orqa's 1280 px), the stickcam to the same width as the DVR.
 
 Match & Sync and Sync have a **PiP Layout** tickbox that does the same right after syncing. The settings are shared and remembered.
 
@@ -95,6 +101,7 @@ The stickcam is lined up by sound, so it helps if both cameras hear the same thi
 - **FPV Sync isn't under Window → Extensions** (Premiere's top menu bar): run `install.bat` again and restart Premiere.
 - **"python" or "ffmpeg" errors:** install them (see [What you need](#what-you-need)), run `install.bat` again, and restart the PC so the new PATH is picked up.
 - **A camera shows as "Unknown source":** its files have no camera name in them, as with stabilised exports. Just set its role like any other.
+- **No ARMED found on any DVR clip:** check that the ARMED message is on in your Betaflight OSD and that you fly the **stock OSD font**: custom fonts aren't recognised.
 - **A flight is off or unmatched:** very loud places (race events, wind) can hide the prop sound. Those flights stay unmatched or get a **check** mark; sync them by hand or with **Sync**.
 - **Something else:** `%APPDATA%\Adobe\CEP\extensions\fpvsync\panel_log.txt` shows what the panel asked Premiere to do, and `timing_log.jsonl` next to it shows what each run did.
 
