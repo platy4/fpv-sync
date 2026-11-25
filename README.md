@@ -6,6 +6,8 @@
 </p>
 <h3 align="center">Syncs all your FPV footage in one click</h3>
 
+<p align="center"><img src="demo.gif" width="880" alt="FPV Sync in Premiere Pro: a trip's footage dumped in the timeline, Match & Sync, then every flight synced with the DVR picture-in-picture"></p>
+
 A Premiere Pro panel that lines up your **analog FPV DVR** recordings with your **HD camera** footage (GoPro, DJI Action, or any camera that records sound), and your **stickcam** (a camera filming your hands on the radio) too. It then lays out the picture-in-picture for you.
 
 > **Analog DVR, with Betaflight's stock OSD font.** It reads the Betaflight OSD burned into your goggles' DVR recordings, NTSC or PAL, at any resolution and frame rate (tested on Orqa and Fatshark HDO2). It recognises **ARMED in Betaflight's stock font only**: if you fly a custom OSD font, arming won't be detected. Digital systems (DJI, Walksnail, HDZero) aren't supported yet.
