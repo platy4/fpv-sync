@@ -34,15 +34,6 @@ When a flight has no ARMED (the recording started mid-flight) or its props can't
 
 <p align="center"><img src="panel.png" width="480" alt="The FPV Sync panel after matching a trip: HD, stickcam and DVR footage side by side, each file with the steps that matched it"></p>
 
-## What you need
-
-- **Windows 10 or 11** with **Premiere Pro 2022 or newer**
-- **Python 3.10+**: <https://www.python.org/downloads/> (tick **"Add python.exe to PATH"** in the installer)
-- **ffmpeg**: easiest is to open a terminal and run `winget install Gyan.FFmpeg`
-- Optional: an NVIDIA graphics card makes reading 4K footage faster. Without one it still works.
-
-Footage: see [What it syncs](#what-it-syncs). The first time a new kind of goggles shows ARMED, the panel learns how its DVR draws the OSD and remembers it.
-
 ## Analog OSD font
 
 The panel finds the moment you arm by reading Betaflight's **ARMED** message in the DVR picture, so your quad needs Betaflight's **stock OSD font**. In Betaflight Configurator, open **OSD → Font Manager**: the font preset should be **Default**. Custom fonts and the other presets draw the letters differently, and arming won't be detected.
@@ -52,6 +43,15 @@ The panel finds the moment you arm by reading Betaflight's **ARMED** message in 
   <img src="osd-dvr-example.jpg" width="380" alt="A DVR frame with Betaflight's stock OSD font (GPS coordinates hidden)">
 </p>
 <p align="center"><sub>Left: Betaflight Configurator → OSD → Font Manager, preset <b>Default</b>. Right: the stock font as it looks in the DVR recording.</sub></p>
+
+## What you need
+
+- **Windows 10 or 11** with **Premiere Pro 2022 or newer**
+- **Python 3.10+**: <https://www.python.org/downloads/> (tick **"Add python.exe to PATH"** in the installer)
+- **ffmpeg**: easiest is to open a terminal and run `winget install Gyan.FFmpeg`
+- Optional: an NVIDIA graphics card makes reading 4K footage faster. Without one it still works.
+
+Footage: see [What it syncs](#what-it-syncs). The first time a new kind of goggles shows ARMED, the panel learns how its DVR draws the OSD and remembers it.
 
 ## Install
 
