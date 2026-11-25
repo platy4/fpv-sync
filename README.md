@@ -25,7 +25,7 @@ Everything is lined up against your **HD footage**, so you need at least one HD 
 | Camera | Synced to the frame by | Paired with the right HD clip by |
 |---|---|---|
 | **HD camera** | it's the reference everything else is lined up to | — |
-| **Stickcam** | the **sound**: it slides the stickcam's soundtrack over the HD clip's until they line up, like Shazam (talk, clap or snap your fingers before takeoff) | the same sound match, plus the **clock** once it has proven reliable |
+| **Stickcam** | the **sound**: it slides the stickcam's soundtrack over the HD clip's until they line up, like Shazam (any talk, clap or finger snap before takeoff helps it a ton) | the same sound match, plus the **clock** once it has proven reliable |
 | **Analog DVR** | the frame where **ARMED** appears, matched to the moment the **props spin up** in the HD clip's sound (within a frame or two) | the cameras' **clocks**, the **motion** in both videos, the file numbers, and the **goggles' mic** if yours records sound |
 
 **Clocks are only trusted once they prove themselves.** A clock can be years off or in the wrong time zone, that's fine as long as it keeps counting: the panel checks that the gap between two cameras' clocks stays the same from flight to flight. A clock that resets every time the camera powers on (some GoPros do) never passes that check and is simply ignored.
