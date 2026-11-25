@@ -10,7 +10,7 @@
 
 A Premiere Pro panel that lines up your **analog FPV DVR** recordings with your **HD camera** footage (GoPro, DJI Action, or any camera that records sound), and your **stickcam** (a camera filming your hands on the radio) too. It then lays out the picture-in-picture for you.
 
-> **Analog DVR, with Betaflight's stock OSD font.** It reads the Betaflight OSD burned into your goggles' DVR recordings, NTSC or PAL, at any resolution and frame rate (tested on Orqa and Fatshark HDO2). It recognises **ARMED in Betaflight's stock font only**: if you fly a custom OSD font, arming won't be detected. Digital systems (DJI, Walksnail, HDZero) aren't supported yet.
+> **Analog DVR, with Betaflight's stock OSD font.** It reads the Betaflight OSD burned into your goggles' DVR recordings, NTSC or PAL, at any resolution and frame rate (tested on Orqa, Fatshark HDO2 and Skyzone). It recognises **ARMED in Betaflight's stock font only**: if you fly a custom OSD font, arming won't be detected (see [OSD font](#osd-font)). Digital systems (DJI, Walksnail, HDZero) aren't supported yet.
 
 How it lines things up:
 - **DVR to HD:** the frame where Betaflight's OSD shows **ARMED** on the DVR, and the moment the props spin up in the HD camera's sound. That's within a frame or two.
@@ -30,6 +30,16 @@ Footage it expects:
 - **Your goggles' analog DVR recordings** (Orqa, Fatshark and other analog goggles, NTSC or PAL), with the OSD burned in and the Betaflight **ARMED** message visible when you arm, in Betaflight's **stock OSD font** (a custom font won't be read). The first time a new kind of goggles shows ARMED, the panel learns how its DVR draws the OSD and remembers it.
 - An **HD camera that records sound**, so the props can be heard.
 - Optional: a **stickcam** that records sound.
+
+## OSD font
+
+The panel finds the moment you arm by reading Betaflight's **ARMED** message in the DVR picture, so your quad needs Betaflight's **stock OSD font**. In Betaflight Configurator, open **OSD → Font Manager**: the font preset should be **Default**. Custom fonts and the other presets draw the letters differently, and arming won't be detected.
+
+<p align="center">
+  <img src="osd-font-default.png" width="430" alt="Betaflight Configurator, OSD Font Manager: font preset Default">
+  <img src="osd-dvr-example.jpg" width="380" alt="A DVR frame with Betaflight's stock OSD font (GPS coordinates hidden)">
+</p>
+<p align="center"><sub>Left: Betaflight Configurator → OSD → Font Manager, preset <b>Default</b>. Right: the stock font as it looks in the DVR recording.</sub></p>
 
 ## Install
 
@@ -103,7 +113,7 @@ The stickcam is lined up by sound, so it helps if both cameras hear the same thi
 - **FPV Sync isn't under Window → Extensions** (Premiere's top menu bar): run `install.bat` again and restart Premiere.
 - **"python" or "ffmpeg" errors:** install them (see [What you need](#what-you-need)), run `install.bat` again, and restart the PC so the new PATH is picked up.
 - **A camera shows as "Unknown source":** its files have no camera name in them, as with stabilised exports. Just set its role like any other.
-- **No ARMED found on any DVR clip:** check that the ARMED message is on in your Betaflight OSD and that you fly the **stock OSD font**: custom fonts aren't recognised.
+- **No ARMED found on any DVR clip:** check that the ARMED message is on in your Betaflight OSD and that you fly the **stock OSD font** (preset **Default**, see [OSD font](#osd-font)): custom fonts aren't recognised.
 - **A flight is off or unmatched:** very loud places (race events, wind) can hide the prop sound. Those flights stay unmatched or get a **check** mark; sync them by hand or with **Sync**.
 - **Something else:** `%APPDATA%\Adobe\CEP\extensions\fpvsync\panel_log.txt` shows what the panel asked Premiere to do, and `timing_log.jsonl` next to it shows what each run did.
 
