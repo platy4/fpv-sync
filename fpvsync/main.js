@@ -468,13 +468,13 @@ try {
 } catch (e) {}
 const audioKept = (key) => pipSet.audio[key] !== false;          // kept unless you removed it
 function savePip() { try { fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ pip: pipSet }, null, 1)); } catch (e) {} }
-const pipCfg = () => Object.assign({ scale: 76, crop_top: 0.6, crop_right: 0, dvr_size_fallback: [1280, 960] }, cfg.pip || {});
+const pipCfg = () => Object.assign({ dvr_width: 970, crop_top: 0.6, crop_right: 0, dvr_size_fallback: [1280, 960] }, cfg.pip || {});
 function srcSize(kind) {                     // pixel size of the selection's camera with that role
   const roles = rolesNow();
   const g = cams.groups.find((x) => roles[x.key] === kind && x.size && x.size[0] && x.size[1]);
   return g ? g.size : kind === 'dvr' ? pipCfg().dvr_size_fallback : [1920, 1080];
 }
-const dvrDefault = () => Math.round(pipCfg().scale / 100 * srcSize('dvr')[0]);   // 76 % of 1280 = 973 px
+const dvrDefault = () => Math.round(pipCfg().dvr_width);   // the same on-screen width whatever the DVR's resolution
 const pipWidth = (kind) => pipSet[kind].width || dvrDefault();                   // the stickcam: as wide as the DVR
 function pipKinds() {                        // the PiP roles in the selection
   const r = Object.values(rolesNow());
@@ -494,7 +494,7 @@ function drawPip() {
     const [w, h] = dims(kind);
     return `<div class="crow"><span class="who"><span class="sw ${kind}"></span>${ROLE_NAME[kind]}</span>` +
       `<input data-kind="${kind}" value="${w}"${prog.running ? ' disabled' : ''}><span class="dim">× ${h} px</span>` +
-      `<span class="hint">${kind === 'dvr' ? `default ${dvrDefault()} px (${pipCfg().scale} %)` : 'default: as wide as the DVR'}</span></div>`;
+      `<span class="hint">${kind === 'dvr' ? `default ${dvrDefault()} px` : 'default: as wide as the DVR'}</span></div>`;
   });
   const spot = (kind, at) => {               // a box's place in the preview at an anchor
     const [w, h] = dims(kind).map((v) => v * k), [fx, fy] = ANCHORS[at];
