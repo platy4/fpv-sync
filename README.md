@@ -43,7 +43,7 @@ When a flight has no ARMED (the recording started mid-flight) or its props can't
 
 Footage: see [What it syncs](#what-it-syncs). The first time a new kind of goggles shows ARMED, the panel learns how its DVR draws the OSD and remembers it.
 
-## OSD font
+## Analog OSD font
 
 The panel finds the moment you arm by reading Betaflight's **ARMED** message in the DVR picture, so your quad needs Betaflight's **stock OSD font**. In Betaflight Configurator, open **OSD → Font Manager**: the font preset should be **Default**. Custom fonts and the other presets draw the letters differently, and arming won't be detected.
 
