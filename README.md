@@ -16,21 +16,19 @@ Everything is lined up against your **HD footage**, so you need at least one HD 
 
 | Camera | Examples | Needs |
 |---|---|---|
-| **HD camera** (the reference) | DJI Action 2, GoPro, any camera on the quad | **Sound**, to hear the props spin up |
+| **HD camera** | DJI Action 2, GoPro, any camera on the quad | **Sound** |
 | **Stickcam** | Any camera filming your hands on the radio | **Sound** |
-| **Analog DVR** | Any analog goggles, NTSC or PAL (tested on Orqa, Fatshark HDO2 and Skyzone) | Betaflight's **ARMED** message in the **stock OSD font**, preset *Default* (see [OSD font](#osd-font)). Digital systems (DJI, Walksnail, HDZero) aren't supported yet. |
+| **Analog DVR** | Any analog DVR, NTSC or PAL, any framerate/resolution from any goggles| Betaflight's **ARMED** message in the **stock OSD font**, preset *Default* (see [OSD font](#osd-font)). Digital systems (DJI, Walksnail, HDZero) aren't supported. |
 
 ## How it lines them up
 
-| Camera | Synced to the frame by | Paired with the right HD clip by |
-|---|---|---|
-| **HD camera** | it's the reference everything else is lined up to | — |
-| **Stickcam** | the **sound**: it slides the stickcam's soundtrack over the HD clip's until they line up, like Shazam (any talk, clap or finger snap before takeoff helps it a ton) | the same sound match, plus the **clock** once it has proven reliable |
-| **Analog DVR** | the frame where **ARMED** appears, matched to the moment the **props spin up** in the HD clip's sound (within a frame or two) | the cameras' **clocks**, the **motion** in both videos, the file numbers, and the **goggles' mic** if yours records sound |
+| Camera | Matched & Synced by |
+|---|---|
+| **HD camera** | Motion, Sound matching, File numbers, Clock |
+| **Stickcam** | Sound matching , File numbers, Clock |
+| **Analog DVR** | the frame where **ARMED** appears, Motion, Sound matching with **goggles' mic** if yours records sound, File numbers, Clock |
 
-**Clocks are only trusted once they prove themselves.** A clock can be years off or in the wrong time zone, that's fine as long as it keeps counting. A clock that resets every time the camera powers on (Like a Camera with a dead RTC Battery) never passes that check and is simply ignored.
-
-When a flight has no ARMED (the recording started mid-flight) or its props can't be heard (wind, a loud spot), the panel falls back on the clocks and the motion in both videos, and marks the flight **check** so you can look at it.
+When a flight has no ARMED (the recording started mid-flight) or its props can't be heard (wind, a loud spot), the extension falls back on the clocks and the motion in both videos, and marks the flight **check** so you can look at it.
 
 <p align="center"><img src="panel.png" width="480" alt="The FPV Sync panel after matching a trip: HD, stickcam and DVR footage side by side, each file with the steps that matched it"></p>
 
